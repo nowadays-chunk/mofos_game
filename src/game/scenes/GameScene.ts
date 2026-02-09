@@ -1,6 +1,6 @@
 import Phaser from 'phaser';
 import { IsoUtils } from '../utils/IsoUtils';
-import { MAP_WIDTH, MAP_HEIGHT, TILE_WIDTH, TILE_HEIGHT, COLORS, CHARACTERS, OBJECTS, TILE_SCALE_CENTER, TILE_SCALE_EDGE, EXPANSION_TRIGGER_DISTANCE, GRID_SIZE } from '../constants';
+import { TILE_WIDTH, TILE_HEIGHT, COLORS, CHARACTERS, OBJECTS, ROOM_MIN_X, ROOM_MAX_X, ROOM_MIN_Y, ROOM_MAX_Y } from '../constants';
 import { Player } from '../entities/Player';
 import { OtherPlayer } from '../entities/OtherPlayer';
 import { Pathfinding } from '../systems/Pathfinding';
@@ -15,15 +15,18 @@ export class GameScene extends Phaser.Scene {
     private pathGraphics!: Phaser.GameObjects.Graphics;
     private tileTextGroup!: Phaser.GameObjects.Group;
 
-    // Infinite map system - sparse data structure
+    // Room bounds tracking
+    private gridMinX: number = ROOM_MIN_X;
+    private gridMaxX: number = ROOM_MAX_X;
+    private gridMinY: number = ROOM_MIN_Y;
+    private gridMaxY: number = ROOM_MAX_Y;
+
+    // Room objects
     private obstacles: Map<string, boolean> = new Map();
     private obstacleSpritesMap: Map<string, Phaser.GameObjects.Sprite> = new Map();
 
-    // Grid bounds tracking
-    private gridMinX: number = -500;
-    private gridMaxX: number = 500;
-    private gridMinY: number = -500;
-    private gridMaxY: number = 500;
+    // Optimization: track visible range to avoid re-rendering
+    private lastVisibleRange: { minX: number, maxX: number, minY: number, maxY: number } | null = null;
 
     private activePath: { x: number, y: number }[] = [];
     private combatSystem!: CombatSystem;
@@ -143,8 +146,8 @@ export class GameScene extends Phaser.Scene {
                         if (this.activePath.length > 0) this.activePath.shift();
                     }, () => {
                         console.log("Path complete.");
-                        // Check for map expansion after arrival
-                        this.checkMapExpansion();
+                        // Check for map transition after arrival
+                        this.checkMapTransition();
                     });
                 } else {
                     console.log("No path found.");
@@ -221,9 +224,19 @@ export class GameScene extends Phaser.Scene {
         }
     }
     update() {
-        // Redraw grid and obstacles based on current viewport
-        this.createGrid();
-        this.createObstacles();
+        // Redraw grid and obstacles based on current viewport ONLY if changed
+        const visibleRange = this.getVisibleTileRange();
+
+        if (!this.lastVisibleRange ||
+            visibleRange.minX !== this.lastVisibleRange.minX ||
+            visibleRange.maxX !== this.lastVisibleRange.maxX ||
+            visibleRange.minY !== this.lastVisibleRange.minY ||
+            visibleRange.maxY !== this.lastVisibleRange.maxY) {
+
+            this.createGrid();
+            this.createObstacles();
+            this.lastVisibleRange = visibleRange;
+        }
 
         this.drawPath();
     }
@@ -382,83 +395,89 @@ export class GameScene extends Phaser.Scene {
         }
     }
 
-    private checkMapExpansion() {
+    private checkMapTransition() {
+        // Check if player has gone outside the current room bounds
         const playerX = this.player.gridX;
         const playerY = this.player.gridY;
 
-        // Check distance from origin (0, 0) in each direction
-        const distanceFromOriginX = Math.abs(playerX);
-        const distanceFromOriginY = Math.abs(playerY);
-
-        // Check if we need to expand in any direction (EXPANSION_TRIGGER_DISTANCE = 800 cells)
-        if (distanceFromOriginX >= EXPANSION_TRIGGER_DISTANCE) {
-            const direction = playerX > 0 ? 'EAST' : 'WEST';
-            console.log(`Player reached expansion threshold! Expanding map to ${direction}`);
-            this.expandMap(direction);
-        } else if (distanceFromOriginY >= EXPANSION_TRIGGER_DISTANCE) {
-            const direction = playerY > 0 ? 'SOUTH' : 'NORTH';
-            console.log(`Player reached expansion threshold! Expanding map to ${direction}`);
-            this.expandMap(direction);
+        // Exit East
+        if (playerX > ROOM_MAX_X) {
+            console.log("Exiting EAST");
+            this.switchMap('EAST');
+        }
+        // Exit West
+        else if (playerX < ROOM_MIN_X) {
+            console.log("Exiting WEST");
+            this.switchMap('WEST');
+        }
+        // Exit South
+        else if (playerY > ROOM_MAX_Y) {
+            console.log("Exiting SOUTH");
+            this.switchMap('SOUTH');
+        }
+        // Exit North
+        else if (playerY < ROOM_MIN_Y) {
+            console.log("Exiting NORTH");
+            this.switchMap('NORTH');
         }
     }
 
-    private expandMap(direction: 'NORTH' | 'SOUTH' | 'EAST' | 'WEST') {
-        console.log(`Expanding map to ${direction}...`);
+    private switchMap(direction: 'NORTH' | 'SOUTH' | 'EAST' | 'WEST') {
+        console.log(`Switching map to ${direction}...`);
 
-        // Extend grid bounds in the specified direction
+        // 1. Clear current entities
+        // Destroy all obstacle sprites
+        this.obstacleSprites.forEach(sprite => sprite.destroy());
+        this.obstacleSprites = [];
+        this.obstacleSpritesMap.clear();
+        this.obstacles.clear();
+
+        // Destroy all other players
+        this.otherPlayers.forEach(p => p.sprite.destroy());
+        this.otherPlayers = [];
+
+        // 2. Teleport player to opposite side
+        // 2. Teleport player to opposite side (on the edge, safely inside)
         switch (direction) {
-            case 'NORTH':
-                this.gridMinY -= GRID_SIZE;
-                break;
-            case 'SOUTH':
-                this.gridMaxY += GRID_SIZE;
-                break;
             case 'EAST':
-                this.gridMaxX += GRID_SIZE;
+                this.player.setGridPosition(ROOM_MIN_X, this.player.gridY);
                 break;
             case 'WEST':
-                this.gridMinX -= GRID_SIZE;
+                this.player.setGridPosition(ROOM_MAX_X, this.player.gridY);
+                break;
+            case 'SOUTH':
+                this.player.setGridPosition(this.player.gridX, ROOM_MIN_Y);
+                break;
+            case 'NORTH':
+                this.player.setGridPosition(this.player.gridX, ROOM_MAX_Y);
                 break;
         }
 
-        console.log(`New grid bounds: X[${this.gridMinX}, ${this.gridMaxX}], Y[${this.gridMinY}, ${this.gridMaxY}]`);
-
-        // Generate obstacles for the new section
+        // 3. Generate new map data
         this.generateObstacles();
 
-        // Redraw grid and obstacles (will use viewport culling)
+        // 4. Create visuals
         this.createGrid();
         this.createObstacles();
 
-        // Spawn new NPCs in the expanded area
+        // 5. Spawn new NPCs
         this.spawnOtherPlayers();
+
+        // Clear paths
+        this.pathGraphics.clear();
+        this.activePath = [];
     }
 
     private resize(gameSize: Phaser.Structs.Size) {
         this.cameras.main.setSize(gameSize.width, gameSize.height);
     }
 
-    private getTileScale(x: number, y: number): number {
-        // Calculate distance from center of the map
-        const centerX = MAP_WIDTH / 2;
-        const centerY = MAP_HEIGHT / 2;
 
-        const dx = x - centerX;
-        const dy = y - centerY;
-        const distance = Math.sqrt(dx * dx + dy * dy);
-
-        // Maximum distance is from center to corner
-        const maxDistance = Math.sqrt(centerX * centerX + centerY * centerY);
-
-        // Normalize distance (0 at center, 1 at corners)
-        const normalizedDistance = Math.min(distance / maxDistance, 1);
-
-        // Interpolate between center scale and edge scale
-        return TILE_SCALE_CENTER - (TILE_SCALE_CENTER - TILE_SCALE_EDGE) * normalizedDistance;
-    }
 
     private isValidTile(x: number, y: number): boolean {
-        return x >= this.gridMinX && x <= this.gridMaxX && y >= this.gridMinY && y <= this.gridMaxY;
+        // Allow 1 tile buffer for map transition triggers
+        return x >= this.gridMinX - 1 && x <= this.gridMaxX + 1 &&
+            y >= this.gridMinY - 1 && y <= this.gridMaxY + 1;
     }
 
     // Custom pathfinding wrapper for sparse obstacle storage

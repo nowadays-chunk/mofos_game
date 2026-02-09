@@ -1,10 +1,12 @@
 export const TILE_WIDTH = 64;
 export const TILE_HEIGHT = 32;
 
-// Infinite map configuration
-export const GRID_SIZE = 1000; // Each grid section is 1000x1000
-export const EXPANSION_THRESHOLD = 0.8; // Expand when player reaches 80% of grid
-export const EXPANSION_TRIGGER_DISTANCE = Math.floor(GRID_SIZE * EXPANSION_THRESHOLD); // 800 cells
+// Room-based map configuration
+export const GRID_SIZE = 25; // Fixed 25x25 room
+export const ROOM_MIN_X = -Math.floor(GRID_SIZE / 2);
+export const ROOM_MAX_X = Math.floor(GRID_SIZE / 2);
+export const ROOM_MIN_Y = -Math.floor(GRID_SIZE / 2);
+export const ROOM_MAX_Y = Math.floor(GRID_SIZE / 2);
 
 // Tile scaling: larger in center, smaller at edges
 export const TILE_SCALE_CENTER = 1.0; // Full size at center
