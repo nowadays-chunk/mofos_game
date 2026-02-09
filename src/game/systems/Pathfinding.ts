@@ -1,8 +1,13 @@
 import { GridNode } from '../types';
-import { MAP_WIDTH, MAP_HEIGHT } from '../constants';
+
+// Support both array-based and sparse obstacle storage
+type ObstacleStorage = boolean[][] | {
+    hasObstacle: (x: number, y: number) => boolean;
+    isValid: (x: number, y: number) => boolean;
+};
 
 export class Pathfinding {
-    static findPath(start: GridNode, end: GridNode, obstacles: boolean[][]): GridNode[] {
+    static findPath(start: GridNode, end: GridNode, obstacles: ObstacleStorage): GridNode[] {
         const openSet: GridNode[] = [start];
         const closedSet: GridNode[] = [];
 
@@ -64,7 +69,7 @@ export class Pathfinding {
         return Math.abs(a.x - b.x) + Math.abs(a.y - b.y);
     }
 
-    private static getNeighbors(node: GridNode, obstacles: boolean[][]): GridNode[] {
+    private static getNeighbors(node: GridNode, obstacles: ObstacleStorage): GridNode[] {
         const neighbors: GridNode[] = [];
         const directions = [
             { x: 0, y: -1 }, // Up
@@ -81,9 +86,18 @@ export class Pathfinding {
             const x = node.x + dir.x;
             const y = node.y + dir.y;
 
-            if (x >= 0 && x < MAP_WIDTH && y >= 0 && y < MAP_HEIGHT) {
-                // Check if obstacles[x][y] is false (not an obstacle)
-                if (!obstacles[x] || !obstacles[x][y]) {
+            // Check if using sparse storage or array
+            if (Array.isArray(obstacles)) {
+                // Legacy array-based check
+                const { MAP_WIDTH, MAP_HEIGHT } = require('../constants');
+                if (x >= 0 && x < MAP_WIDTH && y >= 0 && y < MAP_HEIGHT) {
+                    if (!obstacles[x] || !obstacles[x][y]) {
+                        neighbors.push({ x, y, walkable: true });
+                    }
+                }
+            } else {
+                // Sparse storage check
+                if (obstacles.isValid(x, y) && !obstacles.hasObstacle(x, y)) {
                     neighbors.push({ x, y, walkable: true });
                 }
             }
