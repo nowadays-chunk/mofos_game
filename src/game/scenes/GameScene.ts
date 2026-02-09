@@ -5,7 +5,9 @@ import { Player } from '../entities/Player';
 import { OtherPlayer } from '../entities/OtherPlayer';
 import { Pathfinding } from '../systems/Pathfinding';
 import { CombatSystem } from '../systems/CombatSystem';
-import { CombatUI } from '../../components/CombatUI';
+import { ContextMenu } from '../../components/ContextMenu';
+import { gameEvents, EVENTS } from '../GameEventBus';
+import { Spell } from '../data/Courants';
 
 export class GameScene extends Phaser.Scene {
     private player!: Player;
@@ -14,6 +16,10 @@ export class GameScene extends Phaser.Scene {
     private gridGraphics!: Phaser.GameObjects.Graphics;
     private pathGraphics!: Phaser.GameObjects.Graphics;
     private tileTextGroup!: Phaser.GameObjects.Group;
+    private contextMenu!: ContextMenu;
+    private selectedPlayer: OtherPlayer | null = null;
+    private selectionIndicator!: Phaser.GameObjects.Graphics;
+    private selectedSpell: Spell | null = null;
 
     // Room bounds tracking
     private gridMinX: number = ROOM_MIN_X;
@@ -30,7 +36,6 @@ export class GameScene extends Phaser.Scene {
 
     private activePath: { x: number, y: number }[] = [];
     private combatSystem!: CombatSystem;
-    private combatUI!: CombatUI;
 
     constructor() {
         super('GameScene');
@@ -52,35 +57,32 @@ export class GameScene extends Phaser.Scene {
 
         // Initialize combat system
         this.combatSystem = new CombatSystem(this);
-        this.combatUI = new CombatUI(this);
+        this.contextMenu = new ContextMenu(this);
+        this.selectionIndicator = this.add.graphics();
+        this.selectionIndicator.setDepth(0); // Draw on floor
 
-        // Combat event listeners
-        this.events.on('combat-start', (data: any) => {
-            this.combatUI.show(data.player, data.opponent);
+        // Emit initial stats
+        this.events.once('update', () => {
+            gameEvents.emit(EVENTS.PLAYER.STATS_CHANGED, {
+                hp: this.player.hp,
+                maxHp: this.player.maxHp,
+                ap: this.player.maxAp, // Initial AP
+                maxAp: this.player.maxAp,
+                mp: this.player.maxMp, // Initial MP
+                maxMp: this.player.maxMp,
+                spells: this.player.spells
+            });
         });
 
-        this.events.on('spell-selected', (spell: any) => {
-            if (this.combatSystem.currentTurn === 'player' && this.combatSystem.player && this.combatSystem.opponent) {
-                this.combatSystem.castSpell(spell, this.combatSystem.player, this.combatSystem.opponent);
-                if (this.combatSystem.player && this.combatSystem.opponent) {
-                    this.combatUI.update(this.combatSystem.player, this.combatSystem.opponent, this.combatSystem.currentTurn);
-                }
+        // Listen for spell selection
+        gameEvents.on(EVENTS.COMBAT.SPELL_SELECTED, (spellId: string | null) => {
+            if (!spellId) {
+                this.selectedSpell = null;
+                console.log("Spell deselected");
+            } else {
+                this.selectedSpell = this.player.spells.find(s => s.id === spellId) || null;
+                console.log("Spell selected:", this.selectedSpell?.name);
             }
-        });
-
-        this.events.on('end-turn', () => {
-            this.combatSystem.endTurn();
-        });
-
-        this.events.on('turn-change', () => {
-            if (this.combatSystem.player && this.combatSystem.opponent) {
-                this.combatUI.update(this.combatSystem.player, this.combatSystem.opponent, this.combatSystem.currentTurn);
-            }
-        });
-
-        this.events.on('combat-end', (winner: string) => {
-            this.combatUI.hide();
-            console.log(`Combat ended! Winner: ${winner}`);
         });
 
         // Camera - follow player with smooth lerp
@@ -91,9 +93,31 @@ export class GameScene extends Phaser.Scene {
 
         // Input
         this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
+            // Hide context menu if clicking elsewhere
+            this.contextMenu.hide();
+
             console.log('=== CLICK DETECTED ===');
             console.log('Combat active:', this.combatSystem.isActive);
             console.log('Player moving:', this.player.isMoving);
+
+            if (this.combatSystem.isActive && this.selectedSpell) {
+                const worldPoint = this.cameras.main.getWorldPoint(pointer.x, pointer.y);
+                const gridPos = IsoUtils.isoToCartesian(worldPoint.x, worldPoint.y);
+
+                const targetEntity = this.otherPlayers.find(p => p.gridX === gridPos.x && p.gridY === gridPos.y);
+                const targetParticipant = targetEntity ? (this.combatSystem.opponent?.entity === targetEntity ? this.combatSystem.opponent :
+                    this.combatSystem.player?.entity === targetEntity ? this.combatSystem.player : null) : null;
+
+                const isSelf = this.player.gridX === gridPos.x && this.player.gridY === gridPos.y;
+                const finalTarget = isSelf ? this.combatSystem.player : targetParticipant;
+
+                if (finalTarget && this.combatSystem.player) {
+                    this.combatSystem.castSpell(this.selectedSpell, this.combatSystem.player, finalTarget);
+                } else {
+                    console.log("No valid target on tile");
+                }
+                return;
+            }
 
             // Don't process clicks if combat is active
             if (this.combatSystem.isActive) {
@@ -113,10 +137,30 @@ export class GameScene extends Phaser.Scene {
             // Check if clicked on other player
             const clickedPlayer = this.otherPlayers.find(p => p.gridX === gridPos.x && p.gridY === gridPos.y);
             if (clickedPlayer) {
-                console.log('Clicked on other player! Starting combat...');
-                this.combatSystem.startCombat(this.player, clickedPlayer);
+                console.log('Clicked on other player! Opening menu...');
+
+                // Select player
+                this.selectedPlayer = clickedPlayer;
+                this.drawSelectionIndicator();
+
+                this.contextMenu.show(pointer.x, pointer.y, [
+                    {
+                        text: "Battle",
+                        onClick: () => {
+                            this.startCombatPrep(clickedPlayer);
+                            this.clearSelection();
+                        }
+                    },
+                    {
+                        text: "Inspect",
+                        onClick: () => console.log("Inspect", clickedPlayer)
+                    }
+                ]);
                 return;
             }
+
+            // Clear selection if clicked elsewhere
+            this.clearSelection();
 
             console.log(`Input: Screen(${pointer.x}, ${pointer.y}), World(${worldPoint.x}, ${worldPoint.y}), Grid(${gridPos.x}, ${gridPos.y})`);
 
@@ -181,7 +225,7 @@ export class GameScene extends Phaser.Scene {
         this.otherPlayers.forEach(p => p.sprite.destroy());
         this.otherPlayers = [];
 
-        const count = Phaser.Math.Between(1, 5);
+        const count = 5;
         for (let i = 0; i < count; i++) {
             let placed = false;
             let themeAttempts = 0;
@@ -223,6 +267,25 @@ export class GameScene extends Phaser.Scene {
             }
         }
     }
+    private findPath(start: { x: number, y: number }, end: { x: number, y: number }) {
+        console.log(`[GameScene] Finding path from ${start.x},${start.y} to ${end.x},${end.y}`);
+
+        // Adapting to GridNode structure required by Pathfinding
+        const startNode = { x: start.x, y: start.y, walkable: true };
+        const endNode = { x: end.x, y: end.y, walkable: true };
+
+        const path = Pathfinding.findPath(
+            startNode,
+            endNode,
+            {
+                hasObstacle: (x, y) => this.hasObstacle(x, y),
+                isValid: (x, y) => this.isValidTile(x, y)
+            }
+        );
+        console.log(`[GameScene] Path found: ${path.length} nodes`);
+        return path;
+    }
+
     update() {
         // Redraw grid and obstacles based on current viewport ONLY if changed
         const visibleRange = this.getVisibleTileRange();
@@ -480,15 +543,67 @@ export class GameScene extends Phaser.Scene {
             y >= this.gridMinY - 1 && y <= this.gridMaxY + 1;
     }
 
-    // Custom pathfinding wrapper for sparse obstacle storage
-    private findPath(start: { x: number, y: number }, end: { x: number, y: number }): { x: number, y: number }[] {
-        return Pathfinding.findPath(
-            { x: start.x, y: start.y, walkable: true },
-            { x: end.x, y: end.y, walkable: true },
-            {
-                hasObstacle: (x: number, y: number) => this.hasObstacle(x, y),
-                isValid: (x: number, y: number) => this.isValidTile(x, y)
-            } as any
-        );
+    private startCombatPrep(opponent: OtherPlayer) {
+        console.log("Starting Combat Prep...");
+
+        // 1. Calculate center point (midpoint between player and NPC)
+        const midX = Math.floor((this.player.gridX + opponent.gridX) / 2);
+        const midY = Math.floor((this.player.gridY + opponent.gridY) / 2);
+
+        // 2. Define slots (10 slots each)
+        // Player Team (Blue) - Left/Bottom side relative to center
+        // Enemy Team (Red) - Right/Top side relative to center
+
+        const playerSlots: { x: number, y: number }[] = [];
+        const enemySlots: { x: number, y: number }[] = [];
+
+        // Simple allocation strategy around midpoint
+        // Players at (midX - 2 to midX - 4), Enemies at (midX + 2 to midX + 4)
+
+        for (let y = midY - 2; y <= midY + 2; y++) {
+            playerSlots.push({ x: midX - 2, y });
+            playerSlots.push({ x: midX - 3, y });
+
+            enemySlots.push({ x: midX + 2, y });
+            enemySlots.push({ x: midX + 3, y });
+        }
+
+        // 3. Teleport main combatants to first slots if available
+        if (playerSlots.length > 0) {
+            const pSlot = playerSlots[0];
+            // Identify valid slot (check obstacles) - simple check for now
+            this.player.setGridPosition(pSlot.x, pSlot.y);
+        }
+
+        if (enemySlots.length > 0) {
+            const eSlot = enemySlots[0];
+            opponent.setGridPosition(eSlot.x, eSlot.y);
+        }
+
+        // 4. Start Combat
+        this.combatSystem.startCombat(this.player, opponent);
+    }
+
+
+    private clearSelection() {
+        this.selectedPlayer = null;
+        this.selectionIndicator.clear();
+    }
+
+    private drawSelectionIndicator() {
+        if (!this.selectedPlayer) {
+            this.selectionIndicator.clear();
+            return;
+        }
+
+        this.selectionIndicator.clear();
+
+        const isoPos = IsoUtils.cartesianToIso(this.selectedPlayer.gridX, this.selectedPlayer.gridY);
+
+        // Draw yellow ellipse under player
+        this.selectionIndicator.lineStyle(2, 0xFFFF00, 1);
+        this.selectionIndicator.strokeEllipse(isoPos.x, isoPos.y, TILE_WIDTH, TILE_HEIGHT / 2);
+
+        // Optional: Add glow effect or pulse (tween) in future
     }
 }

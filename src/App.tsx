@@ -2,6 +2,8 @@ import { useEffect, useRef } from 'react';
 import Phaser from 'phaser';
 import { BootScene } from './game/scenes/BootScene';
 import { GameScene } from './game/scenes/GameScene';
+import { GameProvider } from './store/GameStore';
+import { UIOverlay } from './components/ui/UIOverlay';
 import './App.css';
 
 function App() {
@@ -38,10 +40,12 @@ function App() {
     }, []);
 
     return (
-        <div className="App">
-            <h1>Mofos Game</h1>
-            <div ref={gameRef} id="phaser-game" />
-        </div>
+        <GameProvider>
+            <div className="App" style={{ position: 'relative', width: '100vw', height: '100vh', overflow: 'hidden' }}>
+                <UIOverlay />
+                <div ref={gameRef} id="phaser-game" style={{ position: 'absolute', top: 0, left: 0, zIndex: 1 }} />
+            </div>
+        </GameProvider>
     );
 }
 

@@ -11,6 +11,15 @@ export class OtherPlayer {
     courant: CourantType;
     spells: Spell[];
 
+    // Stats
+    hp: number;
+    maxHp: number;
+    ap: number;
+    maxAp: number;
+    mp: number;
+    maxMp: number;
+    level: number = 1;
+
     constructor(scene: Phaser.Scene, x: number, y: number, characterType: string) {
         this.scene = scene;
         this.gridX = x;
@@ -20,6 +29,15 @@ export class OtherPlayer {
         const keys = Object.values(CourantType);
         this.courant = keys[Math.floor(Math.random() * keys.length)];
         this.spells = getSpellsForCourant(this.courant);
+
+        // Initialize Stats (Randomized for variety)
+        this.level = Phaser.Math.Between(1, 5);
+        this.maxHp = 80 + (this.level * 10);
+        this.hp = this.maxHp;
+        this.maxAp = 6;
+        this.ap = this.maxAp;
+        this.maxMp = 3;
+        this.mp = this.maxMp;
 
         console.log(`OtherPlayer assigned to ${this.courant}`);
 
@@ -41,5 +59,13 @@ export class OtherPlayer {
 
         // Play the idle animation
         this.sprite.play(`${characterType}_idle`);
+    }
+
+    setGridPosition(x: number, y: number) {
+        this.gridX = x;
+        this.gridY = y;
+        const isoPos = IsoUtils.cartesianToIso(x, y);
+        this.sprite.setPosition(isoPos.x, isoPos.y);
+        this.sprite.setDepth(isoPos.y);
     }
 }
