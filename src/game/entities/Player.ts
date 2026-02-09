@@ -113,4 +113,12 @@ export class Player {
             }
         });
     }
+
+    setGridPosition(x: number, y: number) {
+        this.gridX = x;
+        this.gridY = y;
+        const isoPos = IsoUtils.cartesianToIso(x, y);
+        this.sprite.setPosition(isoPos.x, isoPos.y);
+        this.sprite.setDepth(isoPos.y);
+    }
 }
