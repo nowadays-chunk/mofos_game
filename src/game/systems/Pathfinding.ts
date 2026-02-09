@@ -1,4 +1,5 @@
 import { GridNode } from '../types';
+import { MAP_WIDTH, MAP_HEIGHT } from '../constants';
 
 // Support both array-based and sparse obstacle storage
 type ObstacleStorage = boolean[][] | {
@@ -89,7 +90,6 @@ export class Pathfinding {
             // Check if using sparse storage or array
             if (Array.isArray(obstacles)) {
                 // Legacy array-based check
-                const { MAP_WIDTH, MAP_HEIGHT } = require('../constants');
                 if (x >= 0 && x < MAP_WIDTH && y >= 0 && y < MAP_HEIGHT) {
                     if (!obstacles[x] || !obstacles[x][y]) {
                         neighbors.push({ x, y, walkable: true });

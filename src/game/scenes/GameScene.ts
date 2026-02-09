@@ -1,6 +1,6 @@
 import Phaser from 'phaser';
 import { IsoUtils } from '../utils/IsoUtils';
-import { MAP_WIDTH, MAP_HEIGHT, TILE_WIDTH, TILE_HEIGHT, COLORS, CHARACTERS, OBJECTS, TILE_SCALE_CENTER, TILE_SCALE_EDGE, setMapDimensions } from '../constants';
+import { MAP_WIDTH, MAP_HEIGHT, TILE_WIDTH, TILE_HEIGHT, COLORS, CHARACTERS, OBJECTS, TILE_SCALE_CENTER, TILE_SCALE_EDGE, EXPANSION_TRIGGER_DISTANCE, GRID_SIZE } from '../constants';
 import { Player } from '../entities/Player';
 import { OtherPlayer } from '../entities/OtherPlayer';
 import { Pathfinding } from '../systems/Pathfinding';
@@ -13,7 +13,7 @@ export class GameScene extends Phaser.Scene {
     private obstacleSprites: Phaser.GameObjects.Sprite[] = [];
     private gridGraphics!: Phaser.GameObjects.Graphics;
     private pathGraphics!: Phaser.GameObjects.Graphics;
-    private debugText!: Phaser.GameObjects.Text;
+    private tileTextGroup!: Phaser.GameObjects.Group;
 
     // Infinite map system - sparse data structure
     private obstacles: Map<string, boolean> = new Map();
@@ -34,7 +34,7 @@ export class GameScene extends Phaser.Scene {
     }
 
     create() {
-        this.add.image(400, 300, 'sky').setScrollFactor(0).setDisplaySize(window.innerWidth, window.innerHeight);
+        this.tileTextGroup = this.add.group();
 
         // Generate initial 1000x1000 grid centered at origin
         this.generateObstacles();
@@ -158,18 +158,6 @@ export class GameScene extends Phaser.Scene {
 
         // Path graphics
         this.pathGraphics = this.add.graphics();
-
-        // Add some text
-        this.add.text(16, 16, 'Mofos Game v0.3 - Infinite Map', {
-            fontSize: '18px',
-            color: '#ffffff'
-        }).setScrollFactor(0);
-
-        this.debugText = this.add.text(16, 48, '', {
-            fontSize: '16px',
-            color: '#ffff00',
-            backgroundColor: '#000000'
-        }).setScrollFactor(0);
     }
 
     // Helper methods for sparse obstacle storage
@@ -238,18 +226,6 @@ export class GameScene extends Phaser.Scene {
         this.createObstacles();
 
         this.drawPath();
-
-        const pointer = this.input.activePointer;
-        const worldPoint = this.cameras.main.getWorldPoint(pointer.x, pointer.y);
-        const gridPos = IsoUtils.isoToCartesian(worldPoint.x, worldPoint.y);
-
-        this.debugText.setText([
-            `Mouse Screen: ${Math.round(pointer.x)}, ${Math.round(pointer.y)}`,
-            `Mouse World: ${Math.round(worldPoint.x)}, ${Math.round(worldPoint.y)}`,
-            `Mouse Grid: ${gridPos.x}, ${gridPos.y}`,
-            `Player Grid: ${this.player.gridX}, ${this.player.gridY}`,
-            `Grid Bounds: X[${this.gridMinX}, ${this.gridMaxX}], Y[${this.gridMinY}, ${this.gridMaxY}]`
-        ]);
     }
 
     private generateObstacles() {
@@ -272,6 +248,9 @@ export class GameScene extends Phaser.Scene {
         this.gridGraphics = this.add.graphics();
         this.gridGraphics.lineStyle(0.5, COLORS.GRID_STROKE, 0.3);
 
+        // Clear previous texts
+        this.tileTextGroup.clear(true, true);
+
         // Get visible tile range based on camera viewport
         const visibleRange = this.getVisibleTileRange();
 
@@ -282,15 +261,9 @@ export class GameScene extends Phaser.Scene {
 
                 const isoPos = IsoUtils.cartesianToIso(x, y);
 
-                // Get scale for this tile based on distance from center
-                const scale = this.getTileScale(x, y);
-
-                // Scaled tile dimensions
-                const scaledWidth = TILE_WIDTH * scale;
-                const scaledHeight = TILE_HEIGHT * scale;
-
-                // Default tile color - fade opacity based on scale
-                this.gridGraphics.fillStyle(COLORS.TILE_DEFAULT, 0.15 * scale);
+                // Use full tile size to remove gaps
+                const scaledWidth = TILE_WIDTH;
+                const scaledHeight = TILE_HEIGHT;
 
                 // Draw filled tile (diamond) with scaling - no gaps
                 this.gridGraphics.beginPath();
@@ -300,8 +273,16 @@ export class GameScene extends Phaser.Scene {
                 this.gridGraphics.lineTo(isoPos.x - scaledWidth / 2, isoPos.y);
                 this.gridGraphics.closePath();
 
-                this.gridGraphics.fillPath();
+                // Removed fillStyle to only show text
+                // this.gridGraphics.fillPath();
                 this.gridGraphics.strokePath();
+
+                // Add text
+                const text = this.add.text(isoPos.x, isoPos.y, `${x},${y}`, {
+                    fontSize: '10px',
+                    color: '#ffffff'
+                }).setOrigin(0.5);
+                this.tileTextGroup.add(text);
             }
         }
     }
@@ -409,10 +390,7 @@ export class GameScene extends Phaser.Scene {
         const distanceFromOriginX = Math.abs(playerX);
         const distanceFromOriginY = Math.abs(playerY);
 
-        // Use EXPANSION_TRIGGER_DISTANCE from constants (800 cells)
-        const { EXPANSION_TRIGGER_DISTANCE } = require('../constants');
-
-        // Check if we need to expand in any direction
+        // Check if we need to expand in any direction (EXPANSION_TRIGGER_DISTANCE = 800 cells)
         if (distanceFromOriginX >= EXPANSION_TRIGGER_DISTANCE) {
             const direction = playerX > 0 ? 'EAST' : 'WEST';
             console.log(`Player reached expansion threshold! Expanding map to ${direction}`);
@@ -425,8 +403,6 @@ export class GameScene extends Phaser.Scene {
     }
 
     private expandMap(direction: 'NORTH' | 'SOUTH' | 'EAST' | 'WEST') {
-        const { GRID_SIZE } = require('../constants');
-
         console.log(`Expanding map to ${direction}...`);
 
         // Extend grid bounds in the specified direction
