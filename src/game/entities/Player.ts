@@ -12,6 +12,17 @@ export class Player {
     spells: Spell[];
     characterType: string;
 
+    // Stats
+    hp: number;
+    maxHp: number;
+    ap: number;
+    maxAp: number;
+    mp: number;
+    maxMp: number;
+    level: number = 1;
+    xp: number = 0;
+    maXp: number = 1000;
+
     constructor(scene: Phaser.Scene, x: number, y: number, characterType?: string) {
         this.scene = scene;
         this.gridX = x;
@@ -28,6 +39,14 @@ export class Player {
             // Map descriptions from our big list
             description: s.description
         }));
+
+        // Initialize Stats
+        this.maxHp = 100;
+        this.hp = this.maxHp;
+        this.maxAp = 6;
+        this.ap = this.maxAp;
+        this.maxMp = 3;
+        this.mp = this.maxMp;
 
         console.log(`Player assigned to ${this.courant} with ${this.spells.length} spells. Character: ${this.characterType}`);
 
