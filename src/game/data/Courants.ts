@@ -132,11 +132,36 @@ export function getSpellsForCourant(type: CourantType): Spell[] {
     const courant = COURANTS_DATA.find(c => c.type === type);
     if (!courant) return [];
 
-    // In a real app, this would query a database of full spell definitions.
-    // Here we generate them based on the list.
-    return courant.spells.map(name => {
+    // Map existing data to Spell objects
+    const baseSpells = courant.spells.map(name => {
         const id = name.toLowerCase().replace(/ /g, '_');
-        // Custom logic to vary spells based on name/index could go here
         return createDefaultSpell(id, name, type);
     });
+
+    // Generate up to 10 spells
+    const spells: Spell[] = [...baseSpells];
+    let i = 0;
+    while (spells.length < 10 && baseSpells.length > 0) {
+        const sourceSpell = baseSpells[i % baseSpells.length];
+        const variantRank = Math.floor(i / baseSpells.length) + 2; // Start ranking at 2
+
+        spells.push({
+            ...sourceSpell,
+            id: `${sourceSpell.id}_v${variantRank}`,
+            name: `${sourceSpell.name} ${toRoman(variantRank)}`,
+            level: variantRank * 2, // varied level
+            apCost: Math.max(2, sourceSpell.apCost + (variantRank % 2 === 0 ? 1 : -1)), // vary cost
+        });
+        i++;
+    }
+
+    return spells.slice(0, 10);
+}
+
+const toRoman = (num: number) => {
+    if (num === 2) return "II";
+    if (num === 3) return "III";
+    if (num === 4) return "IV";
+    return "V";
+    // Add more if needed, but 10 spells with starting 3-4 means max rank 3 or 4
 }
