@@ -3,6 +3,8 @@ import Phaser from 'phaser';
 export class ContextMenu extends Phaser.GameObjects.Container {
     private bg: Phaser.GameObjects.Graphics;
     private options: Phaser.GameObjects.Container[] = [];
+    private menuWidth = 0;
+    private menuHeight = 0;
 
     constructor(scene: Phaser.Scene) {
         super(scene, 0, 0);
@@ -22,6 +24,9 @@ export class ContextMenu extends Phaser.GameObjects.Container {
         const width = 150;
         const optionHeight = 40;
         const height = options.length * optionHeight;
+        this.menuWidth = width;
+        this.menuHeight = height;
+        this.setSize(width, height);
 
         // Draw background
         this.bg.clear();
@@ -70,7 +75,17 @@ export class ContextMenu extends Phaser.GameObjects.Container {
 
     hide() {
         this.visible = false;
+        this.menuWidth = 0;
+        this.menuHeight = 0;
         this.removeAllOptions();
+    }
+
+    containsScreenPoint(x: number, y: number) {
+        if (!this.visible) {
+            return false;
+        }
+
+        return x >= this.x && x <= this.x + this.menuWidth && y >= this.y && y <= this.y + this.menuHeight;
     }
 
     private removeAllOptions() {
