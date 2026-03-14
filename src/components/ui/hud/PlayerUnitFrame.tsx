@@ -4,7 +4,7 @@ import { useGameState } from '../../../store/GameStore';
 export const PlayerUnitFrame: React.FC = () => {
     const { player } = useGameState();
 
-    const getBarColor = (current: number, max: number, type: 'hp' | 'ap' | 'mp') => {
+    const getBarColor = (type: 'hp' | 'ap' | 'mp') => {
         if (type === 'hp') return '#e74c3c'; // Red
         if (type === 'ap') return '#3498db'; // Blue
         if (type === 'mp') return '#2ecc71'; // Green
@@ -21,7 +21,7 @@ export const PlayerUnitFrame: React.FC = () => {
                 <div style={{
                     width: `${(current / max) * 100}%`,
                     height: '100%',
-                    backgroundColor: getBarColor(current, max, type),
+                    backgroundColor: getBarColor(type),
                     transition: 'width 0.3s ease'
                 }} />
             </div>

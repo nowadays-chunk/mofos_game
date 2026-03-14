@@ -174,16 +174,3 @@ const StatRow: React.FC<{ label: string; value: string; color?: string }> = ({ l
     </div>
 );
 
-const SpellRow: React.FC<{ name: string; cost: string; icon: string }> = ({ name, cost, icon }) => (
-    <div style={{
-        display: 'flex', alignItems: 'center', gap: '10px',
-        padding: '8px', background: '#333', borderRadius: '4px', border: '1px solid #444',
-        cursor: 'pointer'
-    }}>
-        <span style={{ fontSize: '20px' }}>{icon}</span>
-        <div style={{ flex: 1 }}>
-            <div style={{ fontWeight: 'bold', fontSize: '14px' }}>{name}</div>
-            <div style={{ fontSize: '12px', color: '#aaa' }}>{cost}</div>
-        </div>
-    </div>
-);
