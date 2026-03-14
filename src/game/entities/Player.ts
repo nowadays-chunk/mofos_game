@@ -3,14 +3,17 @@ import { IsoUtils } from '../utils/IsoUtils';
 import { CourantType, Spell, getSpellsForCourant } from '../data/Courants';
 
 export class Player {
+    id: string;
     scene: Phaser.Scene;
     sprite: Phaser.GameObjects.Sprite; // Changing to Sprite to support animations if needed, or Image for now
+    name: string;
     gridX: number;
     gridY: number;
     isMoving: boolean = false;
     courant: CourantType;
     spells: Spell[];
     characterType: string;
+    initiative: number;
 
     // Stats
     hp: number;
@@ -24,7 +27,9 @@ export class Player {
     maXp: number = 1000;
 
     constructor(scene: Phaser.Scene, x: number, y: number, characterType?: string) {
+        this.id = 'player-main';
         this.scene = scene;
+        this.name = 'Player';
         this.gridX = x;
         this.gridY = y;
 
@@ -47,6 +52,7 @@ export class Player {
         this.ap = this.maxAp;
         this.maxMp = 3;
         this.mp = this.maxMp;
+        this.initiative = 18;
 
         console.log(`Player assigned to ${this.courant} with ${this.spells.length} spells. Character: ${this.characterType}`);
 

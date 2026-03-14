@@ -1,15 +1,19 @@
-
 import Phaser from 'phaser';
 import { IsoUtils } from '../utils/IsoUtils';
 import { CourantType, Spell, getSpellsForCourant } from '../data/Courants';
 
 export class OtherPlayer {
+    id: string;
     scene: Phaser.Scene;
     sprite: Phaser.GameObjects.Sprite;
+    name: string;
     gridX: number;
     gridY: number;
+    isMoving: boolean = false;
     courant: CourantType;
     spells: Spell[];
+    characterType: string;
+    initiative: number;
 
     // Stats
     hp: number;
@@ -21,9 +25,12 @@ export class OtherPlayer {
     level: number = 1;
 
     constructor(scene: Phaser.Scene, x: number, y: number, characterType: string) {
+        this.id = Phaser.Utils.String.UUID();
         this.scene = scene;
+        this.name = `Enemy ${this.id.slice(0, 4)}`;
         this.gridX = x;
         this.gridY = y;
+        this.characterType = characterType;
 
         // Assign random Courant
         const keys = Object.values(CourantType);
@@ -38,6 +45,7 @@ export class OtherPlayer {
         this.ap = this.maxAp;
         this.maxMp = 3;
         this.mp = this.maxMp;
+        this.initiative = 8 + this.level + Phaser.Math.Between(0, 8);
 
         console.log(`OtherPlayer assigned to ${this.courant}`);
 
@@ -59,6 +67,65 @@ export class OtherPlayer {
 
         // Play the idle animation
         this.sprite.play(`${characterType}_idle`);
+    }
+
+    moveAlongPath(path: { x: number, y: number }[], onStepComplete?: () => void, onPathComplete?: () => void) {
+        if (path.length === 0) {
+            if (onPathComplete) {
+                onPathComplete();
+            }
+            return;
+        }
+
+        this.scene.tweens.killTweensOf(this.sprite);
+
+        const tweens: Phaser.Types.Tweens.TweenBuilderConfig[] = path.map((node) => {
+            const isoPos = IsoUtils.cartesianToIso(node.x, node.y);
+            return {
+                targets: this.sprite,
+                x: isoPos.x,
+                y: isoPos.y,
+                duration: 180,
+                onStart: () => {
+                    const previousGridX = this.gridX;
+                    const previousGridY = this.gridY;
+
+                    this.gridX = node.x;
+                    this.gridY = node.y;
+                    this.sprite.setDepth(this.sprite.y);
+
+                    const previousIso = IsoUtils.cartesianToIso(previousGridX, previousGridY);
+                    if (isoPos.x > previousIso.x) {
+                        this.sprite.setFlipX(false);
+                    } else if (isoPos.x < previousIso.x) {
+                        this.sprite.setFlipX(true);
+                    }
+
+                    if (this.sprite.anims.currentAnim?.key !== `${this.characterType}_run`) {
+                        this.sprite.play(`${this.characterType}_run`, true);
+                    }
+
+                    if (onStepComplete) {
+                        onStepComplete();
+                    }
+                },
+                onUpdate: () => {
+                    this.sprite.setDepth(this.sprite.y);
+                }
+            };
+        });
+
+        this.isMoving = true;
+        this.scene.tweens.chain({
+            tweens,
+            onComplete: () => {
+                this.isMoving = false;
+                this.sprite.play(`${this.characterType}_idle`);
+                if (onPathComplete) {
+                    onPathComplete();
+                }
+            }
+        });
     }
 
     setGridPosition(x: number, y: number) {

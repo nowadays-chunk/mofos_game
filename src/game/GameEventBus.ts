@@ -11,9 +11,12 @@ export const EVENTS = {
     COMBAT: {
         STARTED: 'combat-started',
         ENDED: 'combat-ended',
+        UPDATED: 'combat-updated',
         TURN_CHANGED: 'combat-turn-changed',
         LOG: 'combat-log',
-        SPELL_SELECTED: 'combat-spell-selected'
+        SPELL_SELECTED: 'combat-spell-selected',
+        ACTION_FAILED: 'combat-action-failed',
+        END_TURN_REQUESTED: 'combat-end-turn-requested'
     },
     UI: {
         TOGGLE_WINDOW: 'ui-toggle-window'

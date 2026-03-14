@@ -1,4 +1,4 @@
-import { GridNode } from '../types';
+import { GridNode, PathfindingOptions } from '../types';
 import { MAP_WIDTH, MAP_HEIGHT } from '../constants';
 
 // Support both array-based and sparse obstacle storage
@@ -8,9 +8,9 @@ type ObstacleStorage = boolean[][] | {
 };
 
 export class Pathfinding {
-    static findPath(start: GridNode, end: GridNode, obstacles: ObstacleStorage): GridNode[] {
+    static findPath(start: GridNode, end: GridNode, obstacles: ObstacleStorage, options: PathfindingOptions = {}): GridNode[] {
         const openSet: GridNode[] = [start];
-        const closedSet: GridNode[] = [];
+        const closedSet = new Set<string>();
 
         const cameFrom = new Map<string, GridNode>();
 
@@ -39,26 +39,30 @@ export class Pathfinding {
 
             // Remove current from openSet
             openSet.splice(openSet.indexOf(current), 1);
-            closedSet.push(current);
+            closedSet.add(`${current.x},${current.y}`);
 
-            const neighbors = this.getNeighbors(current, obstacles);
+            const neighbors = this.getNeighbors(current, obstacles, options);
 
             for (const neighbor of neighbors) {
-                if (closedSet.some(n => n.x === neighbor.x && n.y === neighbor.y)) {
+                const neighborKey = `${neighbor.x},${neighbor.y}`;
+                if (closedSet.has(neighborKey)) {
                     continue;
                 }
 
                 const tentativeGScore = (gScore.get(`${current.x},${current.y}`) || 0) + 1;
-
-                if (!openSet.some(n => n.x === neighbor.x && n.y === neighbor.y)) {
-                    openSet.push(neighbor);
-                } else if (tentativeGScore >= (gScore.get(`${neighbor.x},${neighbor.y}`) || Infinity)) {
+                if (options.maxDistance !== undefined && tentativeGScore > options.maxDistance) {
                     continue;
                 }
 
-                cameFrom.set(`${neighbor.x},${neighbor.y}`, current);
-                gScore.set(`${neighbor.x},${neighbor.y}`, tentativeGScore);
-                fScore.set(`${neighbor.x},${neighbor.y}`, tentativeGScore + this.heuristic(neighbor, end));
+                if (!openSet.some(n => n.x === neighbor.x && n.y === neighbor.y)) {
+                    openSet.push(neighbor);
+                } else if (tentativeGScore >= (gScore.get(neighborKey) || Infinity)) {
+                    continue;
+                }
+
+                cameFrom.set(neighborKey, current);
+                gScore.set(neighborKey, tentativeGScore);
+                fScore.set(neighborKey, tentativeGScore + this.heuristic(neighbor, end));
             }
         }
 
@@ -70,18 +74,24 @@ export class Pathfinding {
         return Math.abs(a.x - b.x) + Math.abs(a.y - b.y);
     }
 
-    private static getNeighbors(node: GridNode, obstacles: ObstacleStorage): GridNode[] {
+    private static getNeighbors(node: GridNode, obstacles: ObstacleStorage, options: PathfindingOptions): GridNode[] {
         const neighbors: GridNode[] = [];
         const directions = [
             { x: 0, y: -1 }, // Up
             { x: 1, y: 0 },  // Right
             { x: 0, y: 1 },  // Down
-            { x: -1, y: 0 }, // Left
-            { x: 1, y: -1 }, // Up-Right
-            { x: 1, y: 1 },  // Down-Right
-            { x: -1, y: 1 }, // Down-Left
-            { x: -1, y: -1 } // Up-Left
+            { x: -1, y: 0 } // Left
         ];
+        const diagonalDirections = [
+            { x: 1, y: -1 },
+            { x: 1, y: 1 },
+            { x: -1, y: 1 },
+            { x: -1, y: -1 }
+        ];
+
+        if (options.allowDiagonals) {
+            directions.push(...diagonalDirections);
+        }
 
         for (const dir of directions) {
             const x = node.x + dir.x;
