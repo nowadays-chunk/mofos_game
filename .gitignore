@@ -12,6 +12,13 @@
 /build
 /dist
 
+# large source-art files not needed at runtime
+public/design/**/*.psd
+public/design/**/*.ai
+public/design/**/*.eps
+public/design/**/*.scml
+public/design/**/*.unitypackage
+
 # misc
 .DS_Store
 .env.local
