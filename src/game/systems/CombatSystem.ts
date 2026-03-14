@@ -219,6 +219,13 @@ export class CombatSystem {
             return validation;
         }
 
+        const targets = this.getAffectedFighters(spell, caster, targetCell);
+        if (targets.length === 0 && !spell.constraints.freeCell) {
+            const reason = 'No valid targets.';
+            gameEvents.emit(EVENTS.COMBAT.ACTION_FAILED, reason);
+            return { valid: false, reason };
+        }
+
         caster.ap -= spell.apCost;
         caster.cooldowns[spell.id] = spell.constraints.cooldown;
         caster.castsThisTurn[spell.id] = (caster.castsThisTurn[spell.id] ?? 0) + 1;
@@ -227,11 +234,6 @@ export class CombatSystem {
         const targetCounts = caster.castsPerTargetThisTurn[spell.id] ?? {};
         targetCounts[targetKey] = (targetCounts[targetKey] ?? 0) + 1;
         caster.castsPerTargetThisTurn[spell.id] = targetCounts;
-
-        const targets = this.getAffectedFighters(spell, caster, targetCell);
-        if (targets.length === 0 && !spell.constraints.freeCell) {
-            return { valid: false, reason: 'No valid targets.' };
-        }
 
         let totalDamage = 0;
         let totalHealing = 0;
@@ -401,18 +403,20 @@ export class CombatSystem {
     }
 
     private findBestSpellAction(fighter: BattleFighter): { spell: Spell; targetCell: GridPoint } | null {
-        const enemies = this.getLivingFighters(fighter.team === 'player' ? 'enemy' : 'player');
         let bestAction: { spell: Spell; targetCell: GridPoint; score: number } | null = null;
 
         for (const spell of fighter.spells) {
-            for (const enemy of enemies) {
-                const targetCell = { x: enemy.entity.gridX, y: enemy.entity.gridY };
+            for (const targetCell of this.getSpellCandidateCells(fighter, spell)) {
                 const validation = this.validateCast(spell, fighter, targetCell);
                 if (!validation.valid) {
                     continue;
                 }
 
-                const score = this.scoreSpell(spell);
+                const score = this.scoreSpellCast(spell, fighter, targetCell);
+                if (score <= 0) {
+                    continue;
+                }
+
                 if (!bestAction || score > bestAction.score) {
                     bestAction = { spell, targetCell, score };
                 }
@@ -455,6 +459,30 @@ export class CombatSystem {
         }
 
         return closest;
+    }
+
+    private getSpellCandidateCells(fighter: BattleFighter, spell: Spell): GridPoint[] {
+        const candidates = new Map<string, GridPoint>();
+        const addCandidate = (cell: GridPoint) => {
+            candidates.set(`${cell.x},${cell.y}`, cell);
+        };
+
+        if (spell.effects.some((effect) => (effect.targetType ?? 'enemy') === 'self')) {
+            addCandidate({ x: fighter.entity.gridX, y: fighter.entity.gridY });
+        }
+
+        this.getLivingFighters().forEach((target) => {
+            const isRelevantTarget = spell.effects.some((effect) => this.matchesTargetType(fighter, target, effect.targetType));
+            if (isRelevantTarget) {
+                addCandidate({ x: target.entity.gridX, y: target.entity.gridY });
+            }
+        });
+
+        if (spell.constraints.freeCell) {
+            this.getCastableCells(fighter.id, spell).forEach(addCandidate);
+        }
+
+        return [...candidates.values()];
     }
 
     private validateCast(spell: Spell, caster: BattleFighter, targetCell: GridPoint): { valid: boolean; reason?: string } {
@@ -892,22 +920,65 @@ export class CombatSystem {
         return `${caster.name} cast ${spell.name}${targetNames ? ` on ${targetNames}` : ''}.`;
     }
 
-    private scoreSpell(spell: Spell): number {
-        return spell.effects.reduce((score, effect) => {
-            if (effect.type === SpellEffectType.DAMAGE) {
-                return score + effect.max;
-            }
+    private scoreSpellCast(spell: Spell, caster: BattleFighter, targetCell: GridPoint): number {
+        const targets = this.getAffectedFighters(spell, caster, targetCell);
+        if (targets.length === 0 && !spell.constraints.freeCell) {
+            return Number.NEGATIVE_INFINITY;
+        }
 
-            if (effect.type === SpellEffectType.HEAL) {
-                return score + effect.max / 2;
-            }
+        const enemyTargets = targets.filter((target) => target.team !== caster.team);
+        const allyTargets = targets.filter((target) => target.team === caster.team && target.id !== caster.id);
 
-            if (effect.type === SpellEffectType.BUFF_POWER || effect.type === SpellEffectType.STATE) {
-                return score + 8;
-            }
+        const effectScore = spell.effects.reduce((score, effect) => {
+            return score + targets.reduce((effectTotal, target) => {
+                if (!this.matchesTargetType(caster, target, effect.targetType)) {
+                    return effectTotal;
+                }
 
-            return score + 4;
+                return effectTotal + this.scoreEffectOnTarget(effect, caster, target);
+            }, 0);
         }, 0);
+
+        return effectScore + (enemyTargets.length * 2) - (allyTargets.length * 3);
+    }
+
+    private scoreEffectOnTarget(effect: SpellEffect, caster: BattleFighter, target: BattleFighter): number {
+        const averageValue = effect.value ?? (effect.min + effect.max) / 2;
+        const isAlly = caster.team === target.team;
+
+        switch (effect.type) {
+            case SpellEffectType.DAMAGE: {
+                const killBonus = !isAlly && averageValue >= target.hp ? 12 : 0;
+                return isAlly ? -(averageValue * 1.5) : averageValue + killBonus;
+            }
+            case SpellEffectType.HEAL:
+                return isAlly ? averageValue * 0.75 : -(averageValue * 0.5);
+            case SpellEffectType.BUFF_AP:
+            case SpellEffectType.BUFF_MP:
+            case SpellEffectType.BUFF_RANGE:
+            case SpellEffectType.BUFF_POWER:
+                return isAlly ? 6 + averageValue : -8;
+            case SpellEffectType.DEBUFF_AP:
+            case SpellEffectType.DEBUFF_MP:
+                return isAlly ? -8 : 6 + (averageValue * 2);
+            case SpellEffectType.PUSH:
+            case SpellEffectType.PULL:
+                return isAlly ? -3 : 4;
+            case SpellEffectType.STATE: {
+                const state = effect.state?.toUpperCase();
+                if (state === 'SHIELD') {
+                    return isAlly ? 8 + averageValue : -6;
+                }
+
+                if (state === 'POISON') {
+                    return isAlly ? -10 : 8 + (averageValue * 1.5);
+                }
+
+                return isAlly ? 4 : 3;
+            }
+            default:
+                return 0;
+        }
     }
 
     private getNextLivingTurnIndex(): number {
