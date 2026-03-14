@@ -1,65 +1,98 @@
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { gameEvents, EVENTS } from '../../game/GameEventBus';
 import { useGameState } from '../../store/GameStore';
 import { SpellIcon } from './SpellIcon';
-import { gameEvents, EVENTS } from '../../game/GameEventBus';
 
-// Local storage key for hotbar persistence (optional, can just use state for now)
 const HOTBAR_STORAGE_KEY = 'mofos_hotbar';
 
 export const Hotbar: React.FC = () => {
-    const { player } = useGameState();
+    const { player, combat } = useGameState();
     const [slots, setSlots] = useState<(string | null)[]>(Array(10).fill(null));
     const [selectedSpellId, setSelectedSpellId] = useState<string | null>(null);
 
-    // Load hotbar from local storage or default
+    const playerBattleState = useMemo(
+        () => combat.fighters.find((fighter) => fighter.id === 'player-main'),
+        [combat.fighters]
+    );
+    const cooldowns = playerBattleState?.cooldowns ?? {};
+    const isPlayersTurn = combat.isActive && combat.activeFighterId === 'player-main';
+
     useEffect(() => {
         const saved = localStorage.getItem(HOTBAR_STORAGE_KEY);
         if (saved) {
             try {
                 setSlots(JSON.parse(saved));
-            } catch (e) {
-                console.error("Failed to load hotbar", e);
+                return;
+            } catch (error) {
+                console.error('Failed to load hotbar', error);
             }
         }
+
+        setSlots((current) => {
+            if (current.some((slot) => slot !== null)) {
+                return current;
+            }
+            return Array.from({ length: 10 }, (_, index) => player.spells[index]?.id ?? null);
+        });
+    }, [player.spells]);
+
+    useEffect(() => {
+        const onSpellSelected = (spellId: string | null) => {
+            setSelectedSpellId(spellId);
+        };
+
+        gameEvents.on(EVENTS.COMBAT.SPELL_SELECTED, onSpellSelected);
+        return () => {
+            gameEvents.off(EVENTS.COMBAT.SPELL_SELECTED, onSpellSelected);
+        };
     }, []);
 
-    const saveSlots = (newSlots: (string | null)[]) => {
-        setSlots(newSlots);
-        localStorage.setItem(HOTBAR_STORAGE_KEY, JSON.stringify(newSlots));
-    };
-
-    const handleDrop = (e: React.DragEvent, index: number) => {
-        e.preventDefault();
-        const spellId = e.dataTransfer.getData('spellId');
-        if (spellId) {
-            // Check if spell exists in player's spellbook
-            const spell = player.spells.find(s => s.id === spellId);
-            if (spell) {
-                const newSlots = [...slots];
-                // Remove if already in another slot? Standard mmo behavior is to allow copy or move. 
-                // Let's just overwrite for now.
-                newSlots[index] = spellId;
-                saveSlots(newSlots);
-            }
+    useEffect(() => {
+        if (!combat.isActive) {
+            setSelectedSpellId(null);
         }
+    }, [combat.isActive]);
+
+    const saveSlots = (nextSlots: (string | null)[]) => {
+        setSlots(nextSlots);
+        localStorage.setItem(HOTBAR_STORAGE_KEY, JSON.stringify(nextSlots));
     };
 
-    const handleDragOver = (e: React.DragEvent) => {
-        e.preventDefault();
+    const handleDrop = (event: React.DragEvent, index: number) => {
+        event.preventDefault();
+        const spellId = event.dataTransfer.getData('spellId');
+        if (!spellId) {
+            return;
+        }
+
+        const spell = player.spells.find((entry) => entry.id === spellId);
+        if (!spell) {
+            return;
+        }
+
+        const nextSlots = [...slots];
+        nextSlots[index] = spellId;
+        saveSlots(nextSlots);
     };
 
     const handleSlotClick = (spellId: string | null) => {
-        if (!spellId) return;
-
-        if (selectedSpellId === spellId) {
-            // Deselect
-            setSelectedSpellId(null);
-            gameEvents.emit(EVENTS.COMBAT.SPELL_SELECTED, null);
-        } else {
-            // Select
-            setSelectedSpellId(spellId);
-            gameEvents.emit(EVENTS.COMBAT.SPELL_SELECTED, spellId);
+        if (!spellId || !combat.isActive) {
+            return;
         }
+
+        const spell = player.spells.find((entry) => entry.id === spellId);
+        if (!spell) {
+            return;
+        }
+
+        const currentCooldown = cooldowns[spellId] ?? 0;
+        if (!isPlayersTurn || currentCooldown > 0 || (playerBattleState?.ap ?? player.ap) < spell.apCost) {
+            return;
+        }
+
+        const nextSpellId = selectedSpellId === spellId ? null : spellId;
+        setSelectedSpellId(nextSpellId);
+        gameEvents.emit(EVENTS.COMBAT.SPELL_SELECTED, nextSpellId);
     };
 
     return (
@@ -70,15 +103,20 @@ export const Hotbar: React.FC = () => {
             transform: 'translateX(-50%)',
             display: 'flex',
             gap: '4px',
-            backgroundColor: 'rgba(0, 0, 0, 0.7)',
+            backgroundColor: 'rgba(0, 0, 0, 0.75)',
             padding: '8px',
             borderRadius: '8px',
             border: '1px solid #4a5568',
-            zIndex: 900 // Below windows context menu
+            zIndex: 900,
+            pointerEvents: 'auto'
         }}>
             {slots.map((spellId, index) => {
-                const spell = spellId ? player.spells.find(s => s.id === spellId) : null;
+                const spell = spellId ? player.spells.find((entry) => entry.id === spellId) : null;
                 const isSelected = selectedSpellId === spellId;
+                const cooldown = spellId ? cooldowns[spellId] ?? 0 : 0;
+                const disabled = Boolean(
+                    combat.isActive && spell && (!isPlayersTurn || cooldown > 0 || (playerBattleState?.ap ?? player.ap) < spell.apCost)
+                );
 
                 return (
                     <div
@@ -86,29 +124,31 @@ export const Hotbar: React.FC = () => {
                         style={{
                             width: '44px',
                             height: '44px',
-                            backgroundColor: isSelected ? '#4a5568' : '#1a202c', // Highlight seleciton
+                            backgroundColor: isSelected ? '#4a5568' : '#1a202c',
                             border: isSelected ? '2px solid #63b3ed' : '1px solid #2d3748',
                             borderRadius: '4px',
                             display: 'flex',
                             alignItems: 'center',
                             justifyContent: 'center',
                             position: 'relative',
-                            cursor: 'pointer'
+                            cursor: spell ? 'pointer' : 'default',
+                            opacity: disabled ? 0.6 : 1
                         }}
-                        onDrop={(e) => handleDrop(e, index)}
-                        onDragOver={handleDragOver}
+                        onDrop={(event) => handleDrop(event, index)}
+                        onDragOver={(event) => event.preventDefault()}
                         onClick={() => handleSlotClick(spellId)}
                     >
                         {spell ? (
                             <SpellIcon
                                 spell={spell}
                                 isDraggable={true}
-                                onDragStart={(e) => e.dataTransfer.setData('spellId', spell.id)}
+                                onDragStart={(event) => event.dataTransfer.setData('spellId', spell.id)}
+                                disabled={disabled}
+                                cooldown={cooldown}
                             />
                         ) : (
                             <span style={{ fontSize: '10px', color: '#4a5568' }}>{index + 1 > 9 ? 0 : index + 1}</span>
                         )}
-                        {/* Keybind overlay */}
                         <div style={{ position: 'absolute', top: 1, left: 2, fontSize: '8px', color: '#718096' }}>
                             {index + 1 > 9 ? 0 : index + 1}
                         </div>

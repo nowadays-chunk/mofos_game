@@ -1,13 +1,14 @@
 import Phaser from 'phaser';
-import { IsoUtils } from '../utils/IsoUtils';
-import { TILE_WIDTH, TILE_HEIGHT, COLORS, CHARACTERS, OBJECTS, ROOM_MIN_X, ROOM_MAX_X, ROOM_MIN_Y, ROOM_MAX_Y } from '../constants';
+import { ContextMenu } from '../../components/ContextMenu';
+import { Spell } from '../data/Courants';
 import { Player } from '../entities/Player';
 import { OtherPlayer } from '../entities/OtherPlayer';
-import { Pathfinding } from '../systems/Pathfinding';
-import { CombatSystem } from '../systems/CombatSystem';
-import { ContextMenu } from '../../components/ContextMenu';
 import { gameEvents, EVENTS } from '../GameEventBus';
-import { Spell } from '../data/Courants';
+import { COLORS, CHARACTERS, OBJECTS, ROOM_MAX_X, ROOM_MAX_Y, ROOM_MIN_X, ROOM_MIN_Y, TILE_HEIGHT, TILE_WIDTH } from '../constants';
+import { CombatSystem } from '../systems/CombatSystem';
+import { Pathfinding } from '../systems/Pathfinding';
+import { GridPoint } from '../types';
+import { IsoUtils } from '../utils/IsoUtils';
 
 export class GameScene extends Phaser.Scene {
     private player!: Player;
@@ -15,26 +16,19 @@ export class GameScene extends Phaser.Scene {
     private obstacleSprites: Phaser.GameObjects.Sprite[] = [];
     private gridGraphics!: Phaser.GameObjects.Graphics;
     private pathGraphics!: Phaser.GameObjects.Graphics;
+    private battleOverlayGraphics!: Phaser.GameObjects.Graphics;
     private tileTextGroup!: Phaser.GameObjects.Group;
     private contextMenu!: ContextMenu;
     private selectedPlayer: OtherPlayer | null = null;
     private selectionIndicator!: Phaser.GameObjects.Graphics;
     private selectedSpell: Spell | null = null;
-
-    // Room bounds tracking
-    private gridMinX: number = ROOM_MIN_X;
-    private gridMaxX: number = ROOM_MAX_X;
-    private gridMinY: number = ROOM_MIN_Y;
-    private gridMaxY: number = ROOM_MAX_Y;
-
-    // Room objects
+    private gridMinX = ROOM_MIN_X;
+    private gridMaxX = ROOM_MAX_X;
+    private gridMinY = ROOM_MIN_Y;
+    private gridMaxY = ROOM_MAX_Y;
     private obstacles: Map<string, boolean> = new Map();
     private obstacleSpritesMap: Map<string, Phaser.GameObjects.Sprite> = new Map();
-
-    // Optimization: track visible range to avoid re-rendering
-    private lastVisibleRange: { minX: number, maxX: number, minY: number, maxY: number } | null = null;
-
-    private activePath: { x: number, y: number }[] = [];
+    private lastVisibleRange: { minX: number; maxX: number; minY: number; maxY: number } | null = null;
     private combatSystem!: CombatSystem;
 
     constructor() {
@@ -43,171 +37,309 @@ export class GameScene extends Phaser.Scene {
 
     create() {
         this.tileTextGroup = this.add.group();
-
-        // Generate initial 1000x1000 grid centered at origin
         this.generateObstacles();
         this.createGrid();
         this.createObstacles();
 
-        // Spawn Player at 0,0 (ensure no obstacle there)
         this.setObstacle(0, 0, false);
         this.player = new Player(this, 0, 0, 'Bloody_Alchemist_1');
-
         this.spawnOtherPlayers();
 
-        // Initialize combat system
-        this.combatSystem = new CombatSystem(this);
+        this.combatSystem = new CombatSystem(this, {
+            isCellBlocked: (x, y, ignoreFighterIds = []) => this.hasObstacle(x, y) || this.isCombatCellOccupied(x, y, ignoreFighterIds),
+            isCellInBounds: (x, y) => this.isValidTile(x, y)
+        });
+
         this.contextMenu = new ContextMenu(this);
         this.selectionIndicator = this.add.graphics();
-        this.selectionIndicator.setDepth(0); // Draw on floor
+        this.selectionIndicator.setDepth(0);
+        this.pathGraphics = this.add.graphics();
+        this.battleOverlayGraphics = this.add.graphics();
 
-        // Emit initial stats
         this.events.once('update', () => {
             gameEvents.emit(EVENTS.PLAYER.STATS_CHANGED, {
                 hp: this.player.hp,
                 maxHp: this.player.maxHp,
-                ap: this.player.maxAp, // Initial AP
+                ap: this.player.maxAp,
                 maxAp: this.player.maxAp,
-                mp: this.player.maxMp, // Initial MP
+                mp: this.player.maxMp,
                 maxMp: this.player.maxMp,
-                spells: this.player.spells
+                spells: this.player.spells,
+                initiative: this.player.initiative,
+                statuses: []
             });
         });
 
-        // Listen for spell selection
         gameEvents.on(EVENTS.COMBAT.SPELL_SELECTED, (spellId: string | null) => {
-            if (!spellId) {
+            this.selectedSpell = spellId ? this.player.spells.find((spell) => spell.id === spellId) ?? null : null;
+        });
+
+        gameEvents.on(EVENTS.COMBAT.END_TURN_REQUESTED, () => {
+            if (this.combatSystem.isPlayersTurn()) {
                 this.selectedSpell = null;
-                console.log("Spell deselected");
-            } else {
-                this.selectedSpell = this.player.spells.find(s => s.id === spellId) || null;
-                console.log("Spell selected:", this.selectedSpell?.name);
+                gameEvents.emit(EVENTS.COMBAT.SPELL_SELECTED, null);
+                this.combatSystem.endTurn();
             }
         });
 
-        // Camera - follow player with smooth lerp
+        gameEvents.on(EVENTS.COMBAT.ENDED, () => {
+            this.handleCombatEnded();
+        });
+
         this.cameras.main.startFollow(this.player.sprite, true, 0.1, 0.1);
         this.cameras.main.setZoom(1);
-        // Remove bounds for infinite scrolling
         this.cameras.main.removeBounds();
 
-        // Input
         this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
-            // Hide context menu if clicking elsewhere
             this.contextMenu.hide();
 
-            console.log('=== CLICK DETECTED ===');
-            console.log('Combat active:', this.combatSystem.isActive);
-            console.log('Player moving:', this.player.isMoving);
-
-            if (this.combatSystem.isActive && this.selectedSpell) {
-                const worldPoint = this.cameras.main.getWorldPoint(pointer.x, pointer.y);
-                const gridPos = IsoUtils.isoToCartesian(worldPoint.x, worldPoint.y);
-
-                const targetEntity = this.otherPlayers.find(p => p.gridX === gridPos.x && p.gridY === gridPos.y);
-                const targetParticipant = targetEntity ? (this.combatSystem.opponent?.entity === targetEntity ? this.combatSystem.opponent :
-                    this.combatSystem.player?.entity === targetEntity ? this.combatSystem.player : null) : null;
-
-                const isSelf = this.player.gridX === gridPos.x && this.player.gridY === gridPos.y;
-                const finalTarget = isSelf ? this.combatSystem.player : targetParticipant;
-
-                if (finalTarget && this.combatSystem.player) {
-                    this.combatSystem.castSpell(this.selectedSpell, this.combatSystem.player, finalTarget);
-                } else {
-                    console.log("No valid target on tile");
-                }
-                return;
-            }
-
-            // Don't process clicks if combat is active
             if (this.combatSystem.isActive) {
-                console.log('Combat is active, ignoring movement click');
+                void this.handleCombatPointerDown(pointer);
                 return;
             }
 
-            // Don't process clicks if player is already moving
-            if (this.player.isMoving) {
-                console.log('Player is already moving, ignoring click');
-                return;
-            }
-
-            const worldPoint = this.cameras.main.getWorldPoint(pointer.x, pointer.y);
-            const gridPos = IsoUtils.isoToCartesian(worldPoint.x, worldPoint.y);
-
-            // Check if clicked on other player
-            const clickedPlayer = this.otherPlayers.find(p => p.gridX === gridPos.x && p.gridY === gridPos.y);
-            if (clickedPlayer) {
-                console.log('Clicked on other player! Opening menu...');
-
-                // Select player
-                this.selectedPlayer = clickedPlayer;
-                this.drawSelectionIndicator();
-
-                this.contextMenu.show(pointer.x, pointer.y, [
-                    {
-                        text: "Battle",
-                        onClick: () => {
-                            this.startCombatPrep(clickedPlayer);
-                            this.clearSelection();
-                        }
-                    },
-                    {
-                        text: "Inspect",
-                        onClick: () => console.log("Inspect", clickedPlayer)
-                    }
-                ]);
-                return;
-            }
-
-            // Clear selection if clicked elsewhere
-            this.clearSelection();
-
-            console.log(`Input: Screen(${pointer.x}, ${pointer.y}), World(${worldPoint.x}, ${worldPoint.y}), Grid(${gridPos.x}, ${gridPos.y})`);
-
-            if (this.isValidTile(gridPos.x, gridPos.y)) {
-                if (this.hasObstacle(gridPos.x, gridPos.y)) {
-                    console.log("Clicked on obstacle.");
-                    return;
-                }
-
-                console.log(`Finding path from (${this.player.gridX}, ${this.player.gridY}) to (${gridPos.x}, ${gridPos.y})`);
-
-                const path = this.findPath(
-                    { x: this.player.gridX, y: this.player.gridY },
-                    { x: gridPos.x, y: gridPos.y }
-                );
-
-                console.log(`Path found: length ${path.length}`);
-
-                if (path.length > 0) {
-                    // Remove first node (current position)
-                    path.shift();
-                    this.activePath = path; // Save for drawing
-
-                    console.log("Moving along path...");
-                    this.player.moveAlongPath(path, () => {
-                        // On step complete, remove first node from activePath
-                        if (this.activePath.length > 0) this.activePath.shift();
-                    }, () => {
-                        console.log("Path complete.");
-                        // Check for map transition after arrival
-                        this.checkMapTransition();
-                    });
-                } else {
-                    console.log("No path found.");
-                }
-            } else {
-                console.log("Invalid tile clicked.");
-            }
+            this.handleExplorationPointerDown(pointer);
         });
 
         this.scale.on('resize', this.resize, this);
-
-        // Path graphics
-        this.pathGraphics = this.add.graphics();
     }
 
-    // Helper methods for sparse obstacle storage
+    update() {
+        const visibleRange = this.getVisibleTileRange();
+        if (!this.lastVisibleRange ||
+            visibleRange.minX !== this.lastVisibleRange.minX ||
+            visibleRange.maxX !== this.lastVisibleRange.maxX ||
+            visibleRange.minY !== this.lastVisibleRange.minY ||
+            visibleRange.maxY !== this.lastVisibleRange.maxY) {
+            this.createGrid();
+            this.createObstacles();
+            this.lastVisibleRange = visibleRange;
+        }
+
+        this.drawPath();
+    }
+
+    private async handleCombatPointerDown(pointer: Phaser.Input.Pointer) {
+        if (!this.combatSystem.isPlayersTurn() || this.player.isMoving) {
+            return;
+        }
+
+        const worldPoint = this.cameras.main.getWorldPoint(pointer.x, pointer.y);
+        const gridPos = IsoUtils.isoToCartesian(worldPoint.x, worldPoint.y);
+        const targetCell = { x: gridPos.x, y: gridPos.y };
+
+        if (!this.isValidTile(targetCell.x, targetCell.y) || this.hasObstacle(targetCell.x, targetCell.y)) {
+            return;
+        }
+
+        if (this.selectedSpell) {
+            const result = this.combatSystem.castSpell(this.selectedSpell, targetCell);
+            if (!result.valid && result.reason) {
+                console.log(result.reason);
+            }
+            return;
+        }
+
+        const occupant = this.combatSystem.getFighterAtCell(targetCell.x, targetCell.y);
+        if (occupant && occupant.id !== this.player.id) {
+            return;
+        }
+
+        const path = this.findPath(
+            { x: this.player.gridX, y: this.player.gridY },
+            targetCell,
+            { allowDiagonals: false, includeCombatants: true, ignoreFighterIds: [this.player.id], maxDistance: this.player.mp }
+        );
+
+        if (path.length <= 1) {
+            return;
+        }
+
+        const result = await this.combatSystem.moveActiveFighter(path.slice(1));
+        if (!result.valid && result.reason) {
+            console.log(result.reason);
+        }
+    }
+
+    private handleExplorationPointerDown(pointer: Phaser.Input.Pointer) {
+        if (this.player.isMoving) {
+            return;
+        }
+
+        const worldPoint = this.cameras.main.getWorldPoint(pointer.x, pointer.y);
+        const gridPos = IsoUtils.isoToCartesian(worldPoint.x, worldPoint.y);
+
+        const clickedPlayer = this.otherPlayers.find((otherPlayer) => otherPlayer.gridX === gridPos.x && otherPlayer.gridY === gridPos.y);
+        if (clickedPlayer) {
+            this.selectedPlayer = clickedPlayer;
+            this.drawSelectionIndicator();
+            this.contextMenu.show(pointer.x, pointer.y, [
+                {
+                    text: 'Battle',
+                    onClick: () => {
+                        this.startCombatPrep(clickedPlayer);
+                        this.clearSelection();
+                    }
+                },
+                {
+                    text: 'Inspect',
+                    onClick: () => console.log('Inspect', clickedPlayer.name)
+                }
+            ]);
+            return;
+        }
+
+        this.clearSelection();
+
+        if (!this.isValidTile(gridPos.x, gridPos.y) || this.hasObstacle(gridPos.x, gridPos.y)) {
+            return;
+        }
+
+        const path = this.findPath(
+            { x: this.player.gridX, y: this.player.gridY },
+            { x: gridPos.x, y: gridPos.y },
+            { allowDiagonals: true }
+        );
+
+        if (path.length <= 1) {
+            return;
+        }
+
+        this.player.moveAlongPath(path.slice(1), undefined, () => {
+            this.checkMapTransition();
+        });
+    }
+
+    private startCombatPrep(primaryTarget: OtherPlayer) {
+        const enemies = this.getBattleOpponents(primaryTarget);
+        const midpoint = {
+            x: Math.floor((this.player.gridX + primaryTarget.gridX) / 2),
+            y: Math.floor((this.player.gridY + primaryTarget.gridY) / 2)
+        };
+        const occupied = new Set<string>();
+        const playerSlots = this.findBattleSlots(midpoint, 'player', 1, occupied);
+        const enemySlots = this.findBattleSlots(midpoint, 'enemy', enemies.length, occupied);
+
+        this.selectedSpell = null;
+        gameEvents.emit(EVENTS.COMBAT.SPELL_SELECTED, null);
+
+        this.combatSystem.startCombat([
+            {
+                id: this.player.id,
+                name: this.player.name,
+                team: 'player',
+                entity: this.player,
+                spells: this.player.spells,
+                initiative: this.player.initiative,
+                startPosition: playerSlots[0] ?? { x: this.player.gridX, y: this.player.gridY },
+                hp: this.player.hp,
+                maxHp: this.player.maxHp,
+                maxAp: this.player.maxAp,
+                maxMp: this.player.maxMp
+            },
+            ...enemies.map((enemy, index) => ({
+                id: enemy.id,
+                name: enemy.name,
+                team: 'enemy' as const,
+                entity: enemy,
+                spells: enemy.spells,
+                initiative: enemy.initiative,
+                startPosition: enemySlots[index] ?? { x: enemy.gridX, y: enemy.gridY },
+                hp: enemy.hp,
+                maxHp: enemy.maxHp,
+                maxAp: enemy.maxAp,
+                maxMp: enemy.maxMp
+            }))
+        ]);
+    }
+
+    private getBattleOpponents(primaryTarget: OtherPlayer): OtherPlayer[] {
+        const nearbyOpponents = this.otherPlayers
+            .filter((enemy) => enemy.id !== primaryTarget.id)
+            .sort((left, right) => {
+                const leftDistance = Math.abs(left.gridX - primaryTarget.gridX) + Math.abs(left.gridY - primaryTarget.gridY);
+                const rightDistance = Math.abs(right.gridX - primaryTarget.gridX) + Math.abs(right.gridY - primaryTarget.gridY);
+                return leftDistance - rightDistance;
+            })
+            .filter((enemy) => Math.abs(enemy.gridX - primaryTarget.gridX) + Math.abs(enemy.gridY - primaryTarget.gridY) <= 6)
+            .slice(0, 2);
+
+        return [primaryTarget, ...nearbyOpponents];
+    }
+
+    private findBattleSlots(center: GridPoint, team: 'player' | 'enemy', count: number, occupied: Set<string>): GridPoint[] {
+        const slots: GridPoint[] = [];
+        for (let radius = 0; radius <= 6 && slots.length < count; radius++) {
+            for (let x = center.x - radius - 4; x <= center.x + radius + 4 && slots.length < count; x++) {
+                for (let y = center.y - radius - 4; y <= center.y + radius + 4 && slots.length < count; y++) {
+                    const isPreferredSide = team === 'player' ? x <= center.x - 1 : x >= center.x + 1;
+                    const key = `${x},${y}`;
+                    if (!isPreferredSide || occupied.has(key) || !this.isValidTile(x, y) || this.hasObstacle(x, y) || this.isWorldCellOccupied(x, y)) {
+                        continue;
+                    }
+
+                    if (Math.abs(x - center.x) + Math.abs(y - center.y) > radius + 4) {
+                        continue;
+                    }
+
+                    occupied.add(key);
+                    slots.push({ x, y });
+                }
+            }
+        }
+
+        return slots;
+    }
+
+    private handleCombatEnded() {
+        this.selectedSpell = null;
+        gameEvents.emit(EVENTS.COMBAT.SPELL_SELECTED, null);
+
+        const defeatedEnemyIds = new Set(
+            this.combatSystem.getLivingFighters('enemy').length === 0
+                ? this.otherPlayers.filter((enemy) => enemy.hp <= 0).map((enemy) => enemy.id)
+                : []
+        );
+
+        if (this.player.hp <= 0) {
+            this.player.hp = this.player.maxHp;
+            this.player.ap = this.player.maxAp;
+            this.player.mp = this.player.maxMp;
+            this.player.setGridPosition(0, 0);
+            gameEvents.emit(EVENTS.PLAYER.STATS_CHANGED, {
+                hp: this.player.hp,
+                maxHp: this.player.maxHp,
+                ap: this.player.ap,
+                maxAp: this.player.maxAp,
+                mp: this.player.mp,
+                maxMp: this.player.maxMp,
+                initiative: this.player.initiative,
+                spells: this.player.spells,
+                statuses: []
+            });
+        }
+
+        if (defeatedEnemyIds.size > 0) {
+            this.otherPlayers = this.otherPlayers.filter((enemy) => {
+                if (!defeatedEnemyIds.has(enemy.id)) {
+                    enemy.ap = enemy.maxAp;
+                    enemy.mp = enemy.maxMp;
+                    enemy.sprite.setAlpha(1);
+                    return true;
+                }
+
+                enemy.sprite.destroy();
+                return false;
+            });
+        } else {
+            this.otherPlayers.forEach((enemy) => {
+                enemy.ap = enemy.maxAp;
+                enemy.mp = enemy.maxMp;
+                enemy.sprite.setAlpha(1);
+            });
+        }
+    }
+
     private getObstacleKey(x: number, y: number): string {
         return `${x},${y}`;
     }
@@ -221,16 +353,14 @@ export class GameScene extends Phaser.Scene {
     }
 
     private spawnOtherPlayers() {
-        // Clear existing
-        this.otherPlayers.forEach(p => p.sprite.destroy());
+        this.otherPlayers.forEach((otherPlayer) => otherPlayer.sprite.destroy());
         this.otherPlayers = [];
 
         const count = 5;
         for (let i = 0; i < count; i++) {
             let placed = false;
-            let themeAttempts = 0;
-            while (!placed && themeAttempts < 50) {
-                // Spawn within visible grid bounds (smaller area around player)
+            let attempts = 0;
+            while (!placed && attempts < 50) {
                 const spawnRadius = 50;
                 const tx = Phaser.Math.Between(
                     Math.max(this.gridMinX, this.player.gridX - spawnRadius),
@@ -241,119 +371,189 @@ export class GameScene extends Phaser.Scene {
                     Math.min(this.gridMaxY, this.player.gridY + spawnRadius)
                 );
 
-                // Check invalid or obstacle
-                if (!this.isValidTile(tx, ty) || this.hasObstacle(tx, ty)) {
-                    themeAttempts++;
+                if (!this.isValidTile(tx, ty) || this.hasObstacle(tx, ty) || this.isWorldCellOccupied(tx, ty)) {
+                    attempts += 1;
                     continue;
                 }
 
-                // Check player collision
-                if (tx === this.player.gridX && ty === this.player.gridY) {
-                    themeAttempts++;
-                    continue;
-                }
-
-                // Check other players collision
-                if (this.otherPlayers.some(p => p.gridX === tx && p.gridY === ty)) {
-                    themeAttempts++;
-                    continue;
-                }
-
-                // Pick random character
-                const charType = CHARACTERS[Phaser.Math.Between(0, CHARACTERS.length - 1)];
-
-                this.otherPlayers.push(new OtherPlayer(this, tx, ty, charType));
+                const characterType = CHARACTERS[Phaser.Math.Between(0, CHARACTERS.length - 1)];
+                this.otherPlayers.push(new OtherPlayer(this, tx, ty, characterType));
                 placed = true;
             }
         }
     }
-    private findPath(start: { x: number, y: number }, end: { x: number, y: number }) {
-        console.log(`[GameScene] Finding path from ${start.x},${start.y} to ${end.x},${end.y}`);
 
-        // Adapting to GridNode structure required by Pathfinding
-        const startNode = { x: start.x, y: start.y, walkable: true };
-        const endNode = { x: end.x, y: end.y, walkable: true };
-
-        const path = Pathfinding.findPath(
-            startNode,
-            endNode,
+    private findPath(
+        start: GridPoint,
+        end: GridPoint,
+        options: { allowDiagonals: boolean; includeCombatants?: boolean; ignoreFighterIds?: string[]; maxDistance?: number }
+    ) {
+        return Pathfinding.findPath(
+            { x: start.x, y: start.y, walkable: true },
+            { x: end.x, y: end.y, walkable: true },
             {
-                hasObstacle: (x, y) => this.hasObstacle(x, y),
+                hasObstacle: (x, y) => {
+                    if (this.hasObstacle(x, y)) {
+                        return true;
+                    }
+
+                    if (options.includeCombatants) {
+                        return this.isCombatCellOccupied(x, y, options.ignoreFighterIds ?? []);
+                    }
+
+                    return false;
+                },
                 isValid: (x, y) => this.isValidTile(x, y)
+            },
+            {
+                allowDiagonals: options.allowDiagonals,
+                maxDistance: options.maxDistance
             }
         );
-        console.log(`[GameScene] Path found: ${path.length} nodes`);
-        return path;
     }
 
-    update() {
-        // Redraw grid and obstacles based on current viewport ONLY if changed
-        const visibleRange = this.getVisibleTileRange();
+    private drawPath() {
+        this.pathGraphics.clear();
+        this.battleOverlayGraphics.clear();
 
-        if (!this.lastVisibleRange ||
-            visibleRange.minX !== this.lastVisibleRange.minX ||
-            visibleRange.maxX !== this.lastVisibleRange.maxX ||
-            visibleRange.minY !== this.lastVisibleRange.minY ||
-            visibleRange.maxY !== this.lastVisibleRange.maxY) {
+        const pointer = this.input.activePointer;
+        const worldPoint = this.cameras.main.getWorldPoint(pointer.x, pointer.y);
+        const hoveredCell = IsoUtils.isoToCartesian(worldPoint.x, worldPoint.y);
 
-            this.createGrid();
-            this.createObstacles();
-            this.lastVisibleRange = visibleRange;
+        if (this.combatSystem.isActive) {
+            this.drawBattleOverlay({ x: hoveredCell.x, y: hoveredCell.y });
+            return;
         }
 
-        this.drawPath();
+        if (!this.isValidTile(hoveredCell.x, hoveredCell.y) || this.hasObstacle(hoveredCell.x, hoveredCell.y)) {
+            return;
+        }
+
+        const path = this.findPath(
+            { x: this.player.gridX, y: this.player.gridY },
+            { x: hoveredCell.x, y: hoveredCell.y },
+            { allowDiagonals: true }
+        );
+
+        if (path.length > 0) {
+            this.pathGraphics.lineStyle(2, COLORS.PATH_HIGHLIGHT, 1);
+            const startIso = IsoUtils.cartesianToIso(this.player.gridX, this.player.gridY);
+            this.pathGraphics.moveTo(startIso.x, startIso.y);
+
+            for (const node of path) {
+                const isoPos = IsoUtils.cartesianToIso(node.x, node.y);
+                this.pathGraphics.lineTo(isoPos.x, isoPos.y);
+            }
+            this.pathGraphics.strokePath();
+        }
+    }
+
+    private drawBattleOverlay(hoveredCell: GridPoint) {
+        if (!this.combatSystem.isPlayersTurn()) {
+            return;
+        }
+
+        const activeFighter = this.combatSystem.getCurrentTurnParticipant();
+        if (!activeFighter) {
+            return;
+        }
+
+        this.combatSystem.getReachableCells(activeFighter.id).forEach((cell) => {
+            this.drawTileHighlight(this.battleOverlayGraphics, cell, 0x3182ce, 0.18);
+        });
+
+        if (this.selectedSpell) {
+            this.combatSystem.getCastableCells(activeFighter.id, this.selectedSpell).forEach((cell) => {
+                this.drawTileOutline(this.battleOverlayGraphics, cell, 0xf6ad55, 0.65);
+            });
+
+            this.combatSystem.getAffectedCells(activeFighter.id, this.selectedSpell, hoveredCell).forEach((cell) => {
+                this.drawTileHighlight(this.battleOverlayGraphics, cell, 0xe53e3e, 0.28);
+            });
+            return;
+        }
+
+        if (!this.isValidTile(hoveredCell.x, hoveredCell.y) || this.hasObstacle(hoveredCell.x, hoveredCell.y) || this.isCombatCellOccupied(hoveredCell.x, hoveredCell.y, [this.player.id])) {
+            return;
+        }
+
+        const path = this.findPath(
+            { x: this.player.gridX, y: this.player.gridY },
+            hoveredCell,
+            { allowDiagonals: false, includeCombatants: true, ignoreFighterIds: [this.player.id], maxDistance: this.player.mp }
+        );
+        if (path.length > 1) {
+            this.pathGraphics.lineStyle(3, 0x68d391, 0.95);
+            const startIso = IsoUtils.cartesianToIso(this.player.gridX, this.player.gridY);
+            this.pathGraphics.moveTo(startIso.x, startIso.y);
+            for (const node of path) {
+                const isoPos = IsoUtils.cartesianToIso(node.x, node.y);
+                this.pathGraphics.lineTo(isoPos.x, isoPos.y);
+            }
+            this.pathGraphics.strokePath();
+        }
+    }
+
+    private drawTileHighlight(graphics: Phaser.GameObjects.Graphics, cell: GridPoint, color: number, alpha: number) {
+        const isoPos = IsoUtils.cartesianToIso(cell.x, cell.y);
+        graphics.fillStyle(color, alpha);
+        graphics.beginPath();
+        graphics.moveTo(isoPos.x, isoPos.y - TILE_HEIGHT / 2);
+        graphics.lineTo(isoPos.x + TILE_WIDTH / 2, isoPos.y);
+        graphics.lineTo(isoPos.x, isoPos.y + TILE_HEIGHT / 2);
+        graphics.lineTo(isoPos.x - TILE_WIDTH / 2, isoPos.y);
+        graphics.closePath();
+        graphics.fillPath();
+    }
+
+    private drawTileOutline(graphics: Phaser.GameObjects.Graphics, cell: GridPoint, color: number, alpha: number) {
+        const isoPos = IsoUtils.cartesianToIso(cell.x, cell.y);
+        graphics.lineStyle(2, color, alpha);
+        graphics.beginPath();
+        graphics.moveTo(isoPos.x, isoPos.y - TILE_HEIGHT / 2);
+        graphics.lineTo(isoPos.x + TILE_WIDTH / 2, isoPos.y);
+        graphics.lineTo(isoPos.x, isoPos.y + TILE_HEIGHT / 2);
+        graphics.lineTo(isoPos.x - TILE_WIDTH / 2, isoPos.y);
+        graphics.closePath();
+        graphics.strokePath();
     }
 
     private generateObstacles() {
-        // Generate obstacles for current grid bounds
         for (let x = this.gridMinX; x <= this.gridMaxX; x++) {
             for (let y = this.gridMinY; y <= this.gridMaxY; y++) {
-                // Skip if already generated
-                if (this.obstacles.has(this.getObstacleKey(x, y))) continue;
-
-                // 20% chance of obstacle
+                if (this.obstacles.has(this.getObstacleKey(x, y))) {
+                    continue;
+                }
                 this.setObstacle(x, y, Math.random() < 0.2);
             }
         }
-        // Ensure start is clear
         this.setObstacle(0, 0, false);
     }
 
     private createGrid() {
-        if (this.gridGraphics) this.gridGraphics.destroy();
+        if (this.gridGraphics) {
+            this.gridGraphics.destroy();
+        }
         this.gridGraphics = this.add.graphics();
         this.gridGraphics.lineStyle(0.5, COLORS.GRID_STROKE, 0.3);
-
-        // Clear previous texts
         this.tileTextGroup.clear(true, true);
 
-        // Get visible tile range based on camera viewport
         const visibleRange = this.getVisibleTileRange();
-
         for (let x = visibleRange.minX; x <= visibleRange.maxX; x++) {
             for (let y = visibleRange.minY; y <= visibleRange.maxY; y++) {
-                // Skip if outside grid bounds
-                if (!this.isValidTile(x, y)) continue;
+                if (!this.isValidTile(x, y)) {
+                    continue;
+                }
 
                 const isoPos = IsoUtils.cartesianToIso(x, y);
-
-                // Use full tile size to remove gaps
-                const scaledWidth = TILE_WIDTH;
-                const scaledHeight = TILE_HEIGHT;
-
-                // Draw filled tile (diamond) with scaling - no gaps
                 this.gridGraphics.beginPath();
-                this.gridGraphics.moveTo(isoPos.x, isoPos.y - scaledHeight / 2);
-                this.gridGraphics.lineTo(isoPos.x + scaledWidth / 2, isoPos.y);
-                this.gridGraphics.lineTo(isoPos.x, isoPos.y + scaledHeight / 2);
-                this.gridGraphics.lineTo(isoPos.x - scaledWidth / 2, isoPos.y);
+                this.gridGraphics.moveTo(isoPos.x, isoPos.y - TILE_HEIGHT / 2);
+                this.gridGraphics.lineTo(isoPos.x + TILE_WIDTH / 2, isoPos.y);
+                this.gridGraphics.lineTo(isoPos.x, isoPos.y + TILE_HEIGHT / 2);
+                this.gridGraphics.lineTo(isoPos.x - TILE_WIDTH / 2, isoPos.y);
                 this.gridGraphics.closePath();
-
-                // Removed fillStyle to only show text
-                // this.gridGraphics.fillPath();
                 this.gridGraphics.strokePath();
 
-                // Add text
                 const text = this.add.text(isoPos.x, isoPos.y, `${x},${y}`, {
                     fontSize: '10px',
                     color: '#ffffff'
@@ -364,19 +564,13 @@ export class GameScene extends Phaser.Scene {
     }
 
     private getVisibleTileRange() {
-        const camera = this.cameras.main;
-        const worldView = camera.worldView;
-
-        // Convert viewport corners to grid coordinates with larger buffer to fill screen
-        const buffer = 30; // Increased buffer to show more cells
-
-        // Get all four corners of the viewport
+        const worldView = this.cameras.main.worldView;
+        const buffer = 30;
         const topLeft = IsoUtils.isoToCartesian(worldView.left, worldView.top);
         const topRight = IsoUtils.isoToCartesian(worldView.right, worldView.top);
         const bottomLeft = IsoUtils.isoToCartesian(worldView.left, worldView.bottom);
         const bottomRight = IsoUtils.isoToCartesian(worldView.right, worldView.bottom);
 
-        // Find the min/max across all corners
         const minX = Math.floor(Math.min(topLeft.x, topRight.x, bottomLeft.x, bottomRight.x)) - buffer;
         const maxX = Math.ceil(Math.max(topLeft.x, topRight.x, bottomLeft.x, bottomRight.x)) + buffer;
         const minY = Math.floor(Math.min(topLeft.y, topRight.y, bottomLeft.y, bottomRight.y)) - buffer;
@@ -391,36 +585,28 @@ export class GameScene extends Phaser.Scene {
     }
 
     private createObstacles() {
-        // Only create/update obstacles in visible range
         const visibleRange = this.getVisibleTileRange();
-
         for (let x = visibleRange.minX; x <= visibleRange.maxX; x++) {
             for (let y = visibleRange.minY; y <= visibleRange.maxY; y++) {
                 const key = this.getObstacleKey(x, y);
-
-                // Skip if no obstacle or already has sprite
-                if (!this.hasObstacle(x, y)) continue;
-                if (this.obstacleSpritesMap.has(key)) continue;
+                if (!this.hasObstacle(x, y) || this.obstacleSpritesMap.has(key)) {
+                    continue;
+                }
 
                 const isoPos = IsoUtils.cartesianToIso(x, y);
-
-                // Pick random object category
-                const categories = ['ROCKS', 'CRYSTALS', 'BUSHES'];
+                const categories = ['ROCKS', 'CRYSTALS', 'BUSHES'] as const;
                 const category = categories[Phaser.Math.Between(0, categories.length - 1)];
-
-                // Pick random file from category
-                // @ts-ignore
                 const files = OBJECTS[category].files;
                 const file = files[Phaser.Math.Between(0, files.length - 1)];
-                const spriteKey = category === 'ROCKS' ? `rock_${file.split('.')[0]}` :
-                    category === 'CRYSTALS' ? `crystal_${file.split('.')[0]}` :
-                        `bush_${file.split('.')[0]}`;
+                const spriteKey = category === 'ROCKS'
+                    ? `rock_${file.split('.')[0]}`
+                    : category === 'CRYSTALS'
+                        ? `crystal_${file.split('.')[0]}`
+                        : `bush_${file.split('.')[0]}`;
 
                 const sprite = this.add.sprite(isoPos.x, isoPos.y, spriteKey);
                 sprite.setOrigin(0.5, 1);
                 sprite.setDepth(isoPos.y);
-
-                // Scale down if too big
                 if (sprite.width > TILE_WIDTH * 1.5) {
                     sprite.setScale((TILE_WIDTH * 1.5) / sprite.width);
                 }
@@ -431,76 +617,30 @@ export class GameScene extends Phaser.Scene {
         }
     }
 
-    private drawPath() {
-        this.pathGraphics.clear();
-        const pointer = this.input.activePointer;
-        const worldPoint = this.cameras.main.getWorldPoint(pointer.x, pointer.y);
-        const gridPos = IsoUtils.isoToCartesian(worldPoint.x, worldPoint.y);
-
-        if (this.isValidTile(gridPos.x, gridPos.y) && !this.hasObstacle(gridPos.x, gridPos.y)) {
-            const path = this.findPath(
-                { x: this.player.gridX, y: this.player.gridY },
-                { x: gridPos.x, y: gridPos.y }
-            );
-
-            if (path.length > 0) {
-                this.pathGraphics.lineStyle(2, COLORS.PATH_HIGHLIGHT, 1);
-
-                const startIso = IsoUtils.cartesianToIso(this.player.gridX, this.player.gridY);
-                this.pathGraphics.moveTo(startIso.x, startIso.y);
-
-                for (const node of path) {
-                    const isoPos = IsoUtils.cartesianToIso(node.x, node.y);
-                    this.pathGraphics.lineTo(isoPos.x, isoPos.y);
-                }
-                this.pathGraphics.strokePath();
-            }
-        }
-    }
-
     private checkMapTransition() {
-        // Check if player has gone outside the current room bounds
         const playerX = this.player.gridX;
         const playerY = this.player.gridY;
 
-        // Exit East
         if (playerX > ROOM_MAX_X) {
-            console.log("Exiting EAST");
             this.switchMap('EAST');
-        }
-        // Exit West
-        else if (playerX < ROOM_MIN_X) {
-            console.log("Exiting WEST");
+        } else if (playerX < ROOM_MIN_X) {
             this.switchMap('WEST');
-        }
-        // Exit South
-        else if (playerY > ROOM_MAX_Y) {
-            console.log("Exiting SOUTH");
+        } else if (playerY > ROOM_MAX_Y) {
             this.switchMap('SOUTH');
-        }
-        // Exit North
-        else if (playerY < ROOM_MIN_Y) {
-            console.log("Exiting NORTH");
+        } else if (playerY < ROOM_MIN_Y) {
             this.switchMap('NORTH');
         }
     }
 
     private switchMap(direction: 'NORTH' | 'SOUTH' | 'EAST' | 'WEST') {
-        console.log(`Switching map to ${direction}...`);
-
-        // 1. Clear current entities
-        // Destroy all obstacle sprites
-        this.obstacleSprites.forEach(sprite => sprite.destroy());
+        this.obstacleSprites.forEach((sprite) => sprite.destroy());
         this.obstacleSprites = [];
         this.obstacleSpritesMap.clear();
         this.obstacles.clear();
 
-        // Destroy all other players
-        this.otherPlayers.forEach(p => p.sprite.destroy());
+        this.otherPlayers.forEach((otherPlayer) => otherPlayer.sprite.destroy());
         this.otherPlayers = [];
 
-        // 2. Teleport player to opposite side
-        // 2. Teleport player to opposite side (on the edge, safely inside)
         switch (direction) {
             case 'EAST':
                 this.player.setGridPosition(ROOM_MIN_X, this.player.gridY);
@@ -516,74 +656,21 @@ export class GameScene extends Phaser.Scene {
                 break;
         }
 
-        // 3. Generate new map data
         this.generateObstacles();
-
-        // 4. Create visuals
         this.createGrid();
         this.createObstacles();
-
-        // 5. Spawn new NPCs
         this.spawnOtherPlayers();
-
-        // Clear paths
         this.pathGraphics.clear();
-        this.activePath = [];
+        this.battleOverlayGraphics.clear();
     }
 
     private resize(gameSize: Phaser.Structs.Size) {
         this.cameras.main.setSize(gameSize.width, gameSize.height);
     }
 
-
-
     private isValidTile(x: number, y: number): boolean {
-        // Allow 1 tile buffer for map transition triggers
-        return x >= this.gridMinX - 1 && x <= this.gridMaxX + 1 &&
-            y >= this.gridMinY - 1 && y <= this.gridMaxY + 1;
+        return x >= this.gridMinX - 1 && x <= this.gridMaxX + 1 && y >= this.gridMinY - 1 && y <= this.gridMaxY + 1;
     }
-
-    private startCombatPrep(opponent: OtherPlayer) {
-        console.log("Starting Combat Prep...");
-
-        // 1. Calculate center point (midpoint between player and NPC)
-        const midX = Math.floor((this.player.gridX + opponent.gridX) / 2);
-        const midY = Math.floor((this.player.gridY + opponent.gridY) / 2);
-
-        // 2. Define slots (10 slots each)
-        // Player Team (Blue) - Left/Bottom side relative to center
-        // Enemy Team (Red) - Right/Top side relative to center
-
-        const playerSlots: { x: number, y: number }[] = [];
-        const enemySlots: { x: number, y: number }[] = [];
-
-        // Simple allocation strategy around midpoint
-        // Players at (midX - 2 to midX - 4), Enemies at (midX + 2 to midX + 4)
-
-        for (let y = midY - 2; y <= midY + 2; y++) {
-            playerSlots.push({ x: midX - 2, y });
-            playerSlots.push({ x: midX - 3, y });
-
-            enemySlots.push({ x: midX + 2, y });
-            enemySlots.push({ x: midX + 3, y });
-        }
-
-        // 3. Teleport main combatants to first slots if available
-        if (playerSlots.length > 0) {
-            const pSlot = playerSlots[0];
-            // Identify valid slot (check obstacles) - simple check for now
-            this.player.setGridPosition(pSlot.x, pSlot.y);
-        }
-
-        if (enemySlots.length > 0) {
-            const eSlot = enemySlots[0];
-            opponent.setGridPosition(eSlot.x, eSlot.y);
-        }
-
-        // 4. Start Combat
-        this.combatSystem.startCombat(this.player, opponent);
-    }
-
 
     private clearSelection() {
         this.selectedPlayer = null;
@@ -597,13 +684,21 @@ export class GameScene extends Phaser.Scene {
         }
 
         this.selectionIndicator.clear();
-
         const isoPos = IsoUtils.cartesianToIso(this.selectedPlayer.gridX, this.selectedPlayer.gridY);
-
-        // Draw yellow ellipse under player
-        this.selectionIndicator.lineStyle(2, 0xFFFF00, 1);
+        this.selectionIndicator.lineStyle(2, 0xffff00, 1);
         this.selectionIndicator.strokeEllipse(isoPos.x, isoPos.y, TILE_WIDTH, TILE_HEIGHT / 2);
+    }
 
-        // Optional: Add glow effect or pulse (tween) in future
+    private isWorldCellOccupied(x: number, y: number): boolean {
+        if (this.player.gridX === x && this.player.gridY === y) {
+            return true;
+        }
+
+        return this.otherPlayers.some((otherPlayer) => otherPlayer.gridX === x && otherPlayer.gridY === y);
+    }
+
+    private isCombatCellOccupied(x: number, y: number, ignoreFighterIds: string[] = []): boolean {
+        const fighter = this.combatSystem?.getFighterAtCell(x, y);
+        return fighter ? !ignoreFighterIds.includes(fighter.id) : false;
     }
 }
