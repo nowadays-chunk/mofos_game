@@ -5,6 +5,8 @@ export class ContextMenu extends Phaser.GameObjects.Container {
     private options: Phaser.GameObjects.Container[] = [];
     private menuWidth = 0;
     private menuHeight = 0;
+    private optionHeight = 40;
+    private optionActions: Array<() => void> = [];
 
     constructor(scene: Phaser.Scene) {
         super(scene, 0, 0);
@@ -22,10 +24,11 @@ export class ContextMenu extends Phaser.GameObjects.Container {
         this.removeAllOptions();
 
         const width = 150;
-        const optionHeight = 40;
+        const optionHeight = this.optionHeight;
         const height = options.length * optionHeight;
         this.menuWidth = width;
         this.menuHeight = height;
+        this.optionActions = options.map((option) => option.onClick);
         this.setSize(width, height);
 
         // Draw background
@@ -53,17 +56,6 @@ export class ContextMenu extends Phaser.GameObjects.Container {
             }).setOrigin(0, 0.5);
             container.add(text);
 
-            // Interaction
-            const hitArea = new Phaser.Geom.Rectangle(0, 0, width, optionHeight);
-            container.setInteractive(hitArea, Phaser.Geom.Rectangle.Contains);
-
-            container.on('pointerover', () => hoverBg.alpha = 1);
-            container.on('pointerout', () => hoverBg.alpha = 0);
-            container.on('pointerdown', () => {
-                this.hide();
-                opt.onClick();
-            });
-
             this.add(container);
             this.options.push(container);
         });
@@ -88,8 +80,27 @@ export class ContextMenu extends Phaser.GameObjects.Container {
         return x >= this.x && x <= this.x + this.menuWidth && y >= this.y && y <= this.y + this.menuHeight;
     }
 
+    activateScreenPoint(x: number, y: number) {
+        if (!this.containsScreenPoint(x, y)) {
+            return false;
+        }
+
+        const localY = y - this.y;
+        const optionIndex = Math.floor(localY / this.optionHeight);
+        const action = this.optionActions[optionIndex];
+        if (!action) {
+            this.hide();
+            return false;
+        }
+
+        this.hide();
+        action();
+        return true;
+    }
+
     private removeAllOptions() {
         this.options.forEach(o => o.destroy());
         this.options = [];
+        this.optionActions = [];
     }
 }

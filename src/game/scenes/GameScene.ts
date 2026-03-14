@@ -92,6 +92,7 @@ export class GameScene extends Phaser.Scene {
 
         this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
             if (this.contextMenu.visible && this.contextMenu.containsScreenPoint(pointer.x, pointer.y)) {
+                this.contextMenu.activateScreenPoint(pointer.x, pointer.y);
                 return;
             }
 
